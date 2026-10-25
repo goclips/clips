@@ -1,6 +1,52 @@
 // clips.js
 
 /**
+ * Formato del nombre de los clips (path-like), uno o varios segmentos separados 
+ * por "/", cada segmento: [A-Za-z0-9_-]+
+ * 
+ * @private
+ * @type {RegExp}
+ * @constant
+ */ 
+const _clipNameRegexp = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
+
+/**
+ * Longitud máxima permitida para los nombres de clip.
+ * 
+ * @private
+ * @type {number}
+ * @constant
+ */
+const _clipNameMaxLength = 256;
+
+/**
+ * Prefijo para especificar referencias a clips en inclusiones.
+ * 
+ * @private
+ * @type {string}
+ * @constant
+ */
+const _clipPrefix = 'clip:';
+
+/**
+ * Expresión para verificar si una cadena solo contiene espacios.
+ * 
+ * @private
+ * @type {RegExp}
+ * @constant  
+ */
+const _whitespaceRegexp = /^\s*$/;
+
+
+/**
+ * Maps root elements to clips.
+ * 
+ * @private
+ * @type {WeakMap<HTMLElement, Clip>}
+ */
+const _roots = new WeakMap()
+
+/**
  * Stores private state for clips.
  * 
  * @private
@@ -14,12 +60,67 @@
 const _states = new WeakMap()
 
 /**
- * Maps root elements to clips.
- * 
+ * Manejadores de clips registrados por nombre.
+ * @type {Map<string, typeof Clip>}
  * @private
- * @type {WeakMap<HTMLElement, Clip>}
+ * @constant
  */
-const _roots = new WeakMap()
+const _handlers = new Map()
+
+/**
+ * Carga el manejador de un clip especificado por nombre.
+ * @param {string} name Nombre del clip.
+ * @returns {Promise<typeof Clip>} Tipo del clip cargado.
+ * @private
+ */
+async function _loadClip(name) {
+    // TODO: Introducir aquí posibles mapeos para bundles.
+    /*
+        _settings.bundles?.forEach(bundle => {
+            if (bundle.pattern.test(name)) {
+                loadBundle(bundle.path);
+            }
+        });
+    */
+
+    const paths = [
+        `${_settings.basePath}/${name}.js`,
+        `${_settings.basePath}/${name}/index.js`
+    ]
+
+    const errors = []
+
+    for (const path of paths) {
+        let module
+
+        try {
+            module = await import(path)
+        } catch (cause) {
+            errors.push(new ClipError(`Failed to import clip "${name}" from "${path}".`, {
+                code: ClipError.loadFailed,
+                cause
+            }))
+            continue
+        }
+
+        const proto = module && module.default
+
+        // Si la definición cargada no es válida, no se intenta la siguiente ruta.
+        if (proto === null || typeof proto !== 'object') {
+            throw new ClipError(`Invalid clip "${name}" in "${path}": default export must be a prototype of Clip.`, {
+                code: ClipError.loadFailed
+            })
+        }
+
+        // Se registra y devuelve el tipo cargado.
+        return clips.define(name, proto)
+    }
+
+    throw new ClipError(`All import attempts for clip "${name}" failed.`, {
+        code: ClipError.loadFailed,
+        cause: errors
+    })
+}
 
 
 /**
@@ -39,7 +140,7 @@ function Clip(options = {}) {
 }
 
 
-/* CONSTANTS
+/* CLIP CONSTANTS
  * ================================================================================================================== */
 /**
  * Available inclusion positions.
@@ -57,7 +158,6 @@ Clip.Position = Object.freeze({
 
 /* PROTOTYPE PROPERTIES
  * ================================================================================================================== */
-
 Object.defineProperty(Clip.prototype, 'root', {
     get() {
         return _states.get(this).root;
@@ -65,8 +165,15 @@ Object.defineProperty(Clip.prototype, 'root', {
     enumerable: true
 })
 
-Object.defineProperty(Clip.prototype, 'parentClip', {
+Object.defineProperty(Clip.prototype, 'clipName', {
+    get() {
+        return this.constructor.name
+    },
+    configurable: true,
+    enumerable: false
+})
 
+Object.defineProperty(Clip.prototype, 'parentClip', {
     get() {
         for (let element = this.root?.parentElement; element; element = element.parentElement) {
             const clip = _roots.get(element)
@@ -76,13 +183,10 @@ Object.defineProperty(Clip.prototype, 'parentClip', {
         }
         return null
     },
-
     enumerable: true
-
 })
 
 Object.defineProperty(Clip.prototype, 'childClips', {
-
     get() {
         const clips = []
         const collect = element => {
@@ -103,19 +207,14 @@ Object.defineProperty(Clip.prototype, 'childClips', {
         }
         return clips
     },
-
     enumerable: true
-
 })
 
 Object.defineProperty(Clip.prototype, 'childCount', {
-
     get() {
         return this.childClips.length
     },
-    
     enumerable: true
-
 })
 
 Object.defineProperty(Clip.prototype, 'loadTime', {
@@ -187,10 +286,8 @@ async function _include(target, options = {}) {
         
         try {
             out = await this.render(options)
-        } catch (err) {
-            throw new ClipError(`Unable to render clip "${this.clipName}".`, {
-                cause: err
-            });
+        } catch (cause) {
+            throw new ClipError(`Unable to render clip "${this.clipName}".`, { cause });
         }
         if (out == null) {
             throw new ClipError(`Missing render output for clip "${this.clipName}".`)
@@ -360,21 +457,22 @@ async function _include(target, options = {}) {
         state.loadStarted = true;
 
         void (async () => {
+            let data
             try {
-                options.data = await this.load(options)
+                data = await this.load({ ...options, reload: false })
                 state.loadTime = Date.now()            
-            } catch (err) {
-                console.error(`Unable to load clip "${this.clipName}".`, err)
+            } catch (cause) {
+                throw new ClipError(`Unable to load data for clip "${this.clipName}".`, { cause })
             }
-
-            // TODO: Evaluar que hacer si el load falla.
 
             try {
-                await this.update(options)
-            } catch (err) {
-                console.error(`Unable to update clip "${this.clipName}".`, err)
+                await this.update({ ...options, data, reload: false })
+            } catch (cause) {
+                throw new ClipError(`Unable to update clip "${this.clipName}".`, { cause })
             }
-        })();
+        })().catch(err => {
+            console.error(err);
+        })
     }
     
     // Se devuelve la propia instancia.
@@ -397,8 +495,9 @@ Clip.prototype.render = function() {
  * 
  * @param {Object} [options] Additional options.
  * @param {boolean} [options.fresh=false] Whether the root element was newly created.
+ * @returns void|Promise<void>
  */
-Clip.prototype.ready = async function(options) {};
+Clip.prototype.ready = function(options) {};
 
 /**
  * Loads additional data.
@@ -406,18 +505,6 @@ Clip.prototype.ready = async function(options) {};
  * @param {Object} options Additional options.
  */
 Clip.prototype.load = async function(options) {};
-
-/**
- * Carga de datos (envoltorio). Llama a la carga, actualiza el tiempo de carga y llama a la actualización.
- * 
- * @param {Object} options Opciones adicionales.
- * @private
- */
-Clip.prototype._load = async function(options) {
-    // const data = await this.load(options);
-    // this._loadTime = Date.now();
-    // return this.update(data === undefined ? options : { ...options, data });
-};
 
 /**
  * Updates the content of the clip after loading additional data.
@@ -440,7 +527,7 @@ Clip.prototype.reload = async function(options) {
  * @param {Object} options Opciones adicionales.
  */
 Clip.prototype.clear = function(options) {
-    // ... 
+    // ...
 }
 
 /**
@@ -485,7 +572,6 @@ Clip.prototype.destroy = function() {
  */
 const _eventStates = new WeakMap()
 
-
 /**
  * Creates a clip event.
  *
@@ -527,7 +613,6 @@ function ClipEvent(type, detail) {
     })
 
 }
-
 
 Object.defineProperties(Clip.prototype, {
 
@@ -686,6 +771,218 @@ Object.defineProperties(Clip.prototype, {
 })
 
 
+/* ================================================================================================================== */
+/**
+ * Ajustes de configuración.
+ * @type {Object}
+ * @private
+ * @constant
+ */
+const _settings = {
+
+    /**
+     * Indica si activar el modo de depuración.
+     * @type {boolean}
+     * @default false
+     */
+    debug: false,
+
+    /**
+     * Ruta base donde se ubica la definición de los clips.
+     * @type {string}
+     * @default '/clips'
+     */
+    basePath: '/clips',
+
+    /**
+     * Indica si los estilos están pre-empaquetados.
+     * @type {boolean}
+     * @default false
+     */
+    stylesBundled: false,
+
+    /**
+     * Indica si las plantillas están pre-empaquetadas.
+     * @type {boolean}
+     * @default false
+     */
+    templatesBundled: false
+}
+
+
+/**
+ * TODO: Falta documentación.
+ * 
+ * @namespace
+ */
+const clips = {
+
+    /**
+     * Actualiza los ajustes de configuración especificados.
+     * @param {Object} settings Ajustes de configuración.
+     * @param {boolean} [settings.debug] Indica si activar el modo debug.
+     * @param {string}  [settings.basePath] Ruta base donde se localiza la definición de los clips.
+     * @param {boolean} [settings.stylesBundled] Indica si los estilos están pre-empaquetados.
+     * @param {boolean} [settings.templatesBundled] Indica si las plantillas están pre-empaquetadas.
+     */
+    setup: function(settings) {
+        Object.assign(_settings, settings);
+    },
+    
+    /**
+     * Define un nuevo tipo de clip.
+     * @param {string} name Nombre del clip (único).
+     * @param {Object} proto Prototipo del clip.
+     * @return {new (options: ClipOptions) => Clip} Constructor del nuevo tipo de clip.
+     */
+    define: async function(name, proto) {
+        // Se valida el nombre.
+        if (typeof name !== 'string') {
+            throw new TypeError('Invalid clip name: string required.')
+        }
+
+        name = name.trim()
+
+        if (!name) {
+            throw new TypeError('Invalid clip name: empty string.')
+        }
+
+        if (name.length > _clipNameMaxLength) {
+            throw new RangeError(`Invalid clip name: too long (${name.length} > ${_clipNameMaxLength}).`)
+        }
+
+        if (!_clipNameRegexp.test(name)) {
+            throw new TypeError('Invalid clip name: expected path-like string without leading or trailing slash.')
+        }
+
+        if (_handlers.has(name)) {
+            throw new ClipError(`Clip "${name}" already defined.`, {
+                code: alreadyDefined
+            })
+        }
+
+        // Se valida el objeto prototipo.
+        if (proto === null || typeof proto !== 'object' || Object.getPrototypeOf(proto) !== Object.prototype) {
+            throw new TypeError('Invalid prototype: plain object required.')
+        }
+
+        // Se valida y resuelve el tipo de clip base.
+        let base = proto.extends
+
+        if (base !== undefined) {
+            if (typeof base !== 'string') {
+                throw new TypeError(`Invalid extends: string required.`)
+            }
+
+            base = base.trim()
+
+            if (!base) {
+                throw new TypeError(`Invalid extends: empty string.`)
+            }
+
+            if (base === name) {
+                throw new TypeError('Invalid extends: a clip cannot extend itself.')
+            }
+
+            if (!_handlers.has(base)) {
+                await _loadHandler(base)
+
+                if (!_handlers.has(base)) {
+                    throw new ClipError(`Invalid extends: clip "${base}" not defined.`, {
+                        code: ClipError.notDefined
+                    })
+                }
+            }
+        }
+
+        // Se determina el constructor base si se ha especificado.
+        const B = _handlers.get(base) ?? Clip
+
+        // Se crea la función constructora del nuevo clip.
+        const C = function(options) {
+            B.call(this, options);
+        };
+
+        // Se heredan los estáticos del constructor base.
+        Object.setPrototypeOf(C, B);
+
+        // Se establece el prototipo base para permitir el uso de super.
+        Object.setPrototypeOf(proto, B.prototype)
+
+        // Se obtienen los descriptores, excluyendo "constructor", "extends" y "styles".
+        const desc = Object.getOwnPropertyDescriptors(proto);
+        delete desc.constructor
+        delete desc.extends;
+        delete desc.styles;
+
+        // Se crea el prototipo del nuevo clip a partir del prototipo base.
+        C.prototype = Object.create(B.prototype, desc);
+
+        // Se define la propiedad "constructor" no enumerable.
+        Object.defineProperty(C.prototype, 'constructor', {
+            value: C,
+            writable: true,
+            configurable: true,
+            enumerable: false
+        });
+
+        // Se asigna al constructor el nombre del tipo de clip.
+        Object.defineProperty(C, 'name', {
+            value: name,
+            configurable: true
+        })
+
+        // Se registra el constructor con el nombre del tipo de clip.
+        if (_handlers.has(name)) {
+            throw new ClipError(`Clip "${name}" already defined.`, {
+                code: ClipError.alreadyDefined
+            })
+        }
+
+        _handlers.set(name, C);
+
+
+
+
+
+        // Se importan la hoja de estilos asociada.
+        // _importClipStyles(name, proto.styles);
+
+
+
+
+        
+        
+        // Se devuelve el constructor del nuevo clip.
+        return C;
+    },
+
+    /**
+     * Crea una nueva instancia del tipo de clip especificado por nombre.
+     * @param {string} name Nombre del tipo de clip especificado.
+     * @param {ClipOptions} [options] Opciones de creación del clip.
+     * @return {Clip} Instancia del clip creada.
+     */
+    create: async function(name, options = {}) {
+        if (typeof name !== "string" || !(name = name.trim())) {
+            throw new TypeError('Invalid clip name: non-empty string required.');
+        }
+        if (!_handlers[name]) {
+            await _loadHandler(name);
+        }
+        const handler = _handlers[name];
+        if (!handler) {
+            throw new ClipError(`Clip "${name}" is not defined.`, {
+                code: ClipError.NOT_DEFINED
+            });
+        }
+        return new handler(options);
+    }
+
+}
+
+
+
 /* ERRORS
  * ================================================================================================================== */
 /**
@@ -694,10 +991,11 @@ Object.defineProperties(Clip.prototype, {
 class ClipError extends Error {
 
     // Códigos de error:
-    static rootRequired = 'root_required'
-    static loadFailed   = 'load_failed'
-    static notDefined   = 'not_defined'
-    static notFound     = 'not_found'
+    static alreadyDefined   = 'already_defined'
+    static rootRequired     = 'root_required'
+    static loadFailed       = 'load_failed'
+    static notDefined       = 'not_defined'
+    static notFound         = 'not_found'
 
     /**
      * Constructor.

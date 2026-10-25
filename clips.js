@@ -93,6 +93,15 @@ Object.defineProperties(Clip.prototype, {
     }
 });
 
+/**
+ * Nombre del tipo de clip.
+ * @type {string}
+ * @readonly
+ */
+Object.defineProperty(Clip.prototype, 'clipName', {
+    
+})
+
 
 /* Constants of Clip
  * ================================================================================================================== */
