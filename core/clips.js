@@ -1,7 +1,5 @@
 // clips.js
 
-
-
 /**
  * Prefijo para especificar referencias a clips en inclusiones.
  * 
@@ -17,7 +15,6 @@
  * @type {RegExp}
  */
 // const _whitespaceRegexp = /^\s*$/;
-
 
 /**
  * Maps root elements to clips.
@@ -41,66 +38,12 @@ const _roots = new WeakMap()
 const _states = new WeakMap()
 
 /**
- * Clips registrados por nombre.
- * 
+ * Shared style element containing the styles of registered clips.
+ *
  * @private
- * @type {Map<string, typeof Clip>}
+ * @type {HTMLStyleElement|undefined}
  */
-const _clipTypes = new Map()
-
-/**
- * Carga el manejador de un clip especificado por nombre.
- * 
- * @private
- * @param {string} name Nombre del clip.
- * @returns {Promise<typeof Clip>} Tipo del clip cargado.
- */
-async function _loadClip(name) {
-    // TODO: Introducir aquí posibles mapeos para bundles.
-    /*
-        _settings.bundles?.forEach(bundle => {
-            if (bundle.pattern.test(name)) {
-                loadBundle(bundle.path);
-            }
-        });
-    */
-
-    const paths = [
-        `${_settings.basePath}/${name}.js`,
-        `${_settings.basePath}/${name}/index.js`
-    ]
-
-    const errors = []
-
-    for (const path of paths) {
-        let proto
-
-        try {
-            ({ default: proto } = await import(path))
-        } catch (cause) {
-            errors.push(new ClipError(`Failed to import clip "${name}" from "${path}".`, {
-                code: ClipError.loadFailed,
-                cause
-            }))
-            continue
-        }
-
-        // Si la definición cargada no es válida, no se intenta la siguiente ruta.
-        if (proto === null || typeof proto !== 'object') {
-            throw new ClipError(`Invalid clip "${name}" in "${path}": default export must be a plain object.`, {
-                code: ClipError.loadFailed
-            })
-        }
-
-        // Se registra y devuelve el tipo cargado.
-        return clips.define(name, proto)
-    }
-
-    throw new ClipError(`All import attempts for clip "${name}" failed.`, {
-        code: ClipError.loadFailed,
-        cause: errors
-    })
-}
+let _styleElement
 
 
 /**
@@ -267,7 +210,7 @@ class Clip {
     }
 
     /**
-     * Initializes the generated content and adds the necessary event handlers. Called on every inclusion.
+     * Initializes the generated content and adds the necessary event listeners. Called on every inclusion.
      *
      * @param {Object} [options] Additional options.
      * @param {boolean} [options.fresh=false] Whether the root element was newly created.
@@ -720,7 +663,7 @@ async function _include(target, options = {}) {
 }
 
 
-/* EVENTS
+/* CLIP EVENT
  * ================================================================================================================== */
 /**
  * Internal event states.
@@ -789,6 +732,37 @@ class ClipEvent {
 }
 
 
+/* ================================================================================================================== */
+/**
+ * Clip Error.
+ */
+class ClipError extends Error {
+
+    // Códigos de error:
+    static alreadyDefined   = 'already_defined'
+    static rootRequired     = 'root_required'
+    static loadFailed       = 'load_failed'
+    static notDefined       = 'not_defined'
+    static notFound         = 'not_found'
+
+    /**
+     * Constructor.
+     * @param {string} message Descripción del error.
+     * @param {{ code?: string, cause?: Error | Error[] }} [options] Opciones adicionales.
+     */
+    constructor(message, { code = null, cause } = {}) {
+        super(String(message), cause !== undefined ? { cause } : undefined)
+
+        this.name = 'ClipError'
+        this.code = code
+
+        if (Error.captureStackTrace) {
+            Error.captureStackTrace(this, ClipError)
+        }
+    }
+}
+
+
 /* CLIPS OBJECT
  * ================================================================================================================== */
 
@@ -848,6 +822,14 @@ const _settings = {
     templatesBundled: false
 }
 
+/**
+ * Clips registrados por nombre.
+ * 
+ * @private
+ * @type {Map<string, typeof Clip>}
+ */
+const _clipTypes = new Map()
+
 
 /**
  * TODO: Falta documentación.
@@ -864,7 +846,7 @@ const clips = {
      * @param {boolean} [settings.stylesBundled] Indica si los estilos están pre-empaquetados.
      * @param {boolean} [settings.templatesBundled] Indica si las plantillas están pre-empaquetadas.
      */
-    setup: function(settings) {
+    setup(settings) {
         Object.assign(_settings, settings);
     },
     
@@ -875,7 +857,7 @@ const clips = {
      * @param {Object} proto Clip prototype.
      * @returns {Promise<typeof Clip>} Resolves to the new clip constructor.
      */
-    define: async function(name, proto) {
+    async define(name, proto) {
         // Se valida el nombre.
         if (typeof name !== 'string') {
             throw new TypeError('Invalid clip name: string required.')
@@ -895,16 +877,13 @@ const clips = {
             throw new TypeError('Invalid clip name: expected path-like string without leading or trailing slash.')
         }
 
-        if (_handlers.has(name)) {
+        if (_clipTypes.has(name)) {
             throw new ClipError(`Clip "${name}" already defined.`, {
                 code: ClipError.alreadyDefined
             })
         }
 
         // Se valida el objeto prototipo.
-        // if (proto === null || typeof proto !== 'object' || Object.getPrototypeOf(proto) !== Object.prototype) {
-        //     throw new TypeError('Invalid prototype: plain object required.')
-        // }
         if (proto === null || typeof proto !== 'object') {
             throw new TypeError('Invalid prototype: object required.')
         }
@@ -927,10 +906,10 @@ const clips = {
                 throw new TypeError('Invalid extends: a clip cannot extend itself.')
             }
 
-            if (!_handlers.has(base)) {
+            if (!_clipTypes.has(base)) {
                 await _loadClip(base)
 
-                if (!_handlers.has(base)) {
+                if (!_clipTypes.has(base)) {
                     throw new ClipError(`Invalid extends: clip "${base}" not defined.`, {
                         code: ClipError.notDefined
                     })
@@ -938,8 +917,8 @@ const clips = {
             }
         }
 
-        // Se determina el clase base.
-        const B = _handlers.get(base) ?? Clip
+        // Se determina el tipo base.
+        const B = _clipTypes.get(base) ?? Clip
 
         // Se admite un objeto plano o uno previamente vinculado a esta clase base.
         const parent = Object.getPrototypeOf(proto)
@@ -973,13 +952,13 @@ const clips = {
         await _importClipStyles(name, proto.styles);
 
         // Se registra el constructor con el nombre del tipo de clip.
-        if (_handlers.has(name)) {
+        if (_clipTypes.has(name)) {
             throw new ClipError(`Clip "${name}" already defined.`, {
                 code: ClipError.alreadyDefined
             })
         }
 
-        _handlers.set(name, C);
+        _clipTypes.set(name, C);
         
         // Se devuelve el constructor del nuevo clip.
         return C;
@@ -991,59 +970,90 @@ const clips = {
      * @param {ClipOptions} [options] Opciones de creación del clip.
      * @return {Clip} Instancia del clip creada.
      */
-    create: async function(name, options = {}) {
+    async create(name, options = {}) {
         if (typeof name !== "string" || !(name = name.trim())) {
             throw new TypeError('Invalid clip name: non-empty string required.');
         }
-        if (!_handlers[name]) {
+        if (!_clipTypes[name]) {
             await _loadClip(name);
         }
-        const handler = _handlers[name];
-        if (!handler) {
+        const type = _clipTypes.get(name);
+        if (!type) {
             throw new ClipError(`Clip "${name}" is not defined.`, {
                 code: ClipError.NOT_DEFINED
             });
         }
-        return new handler(options);
-    }
-
-}
-
-
-
-/* ERRORS
- * ================================================================================================================== */
-/**
- * Clip Error.
- */
-class ClipError extends Error {
-
-    // Códigos de error:
-    static alreadyDefined   = 'already_defined'
-    static rootRequired     = 'root_required'
-    static loadFailed       = 'load_failed'
-    static notDefined       = 'not_defined'
-    static notFound         = 'not_found'
+        return new type(options);
+    },
 
     /**
-     * Constructor.
-     * @param {string} message Descripción del error.
-     * @param {{ code?: string, cause?: Error | Error[] }} [options] Opciones adicionales.
+     * Incluye un clip o una plantilla en el elemento o selector especificado.
+     * @param {string} name Nombre del clip o plantilla especificado.
+     * @param {Element} target Elemento especificado. 
+     * @param {Object} [options] Opciones adicionales.
+     * @see Clip#create
+     * @see Clip#include
      */
-    constructor(message, { code = null, cause } = {}) {
-        super(String(message), cause !== undefined ? { cause } : undefined)
-
-        this.name = 'ClipError'
-        this.code = code
-
-        if (Error.captureStackTrace) {
-            Error.captureStackTrace(this, ClipError)
-        }
+    async include(name, target, options) {
+        return (await this.create(name, options)).include(target, options); 
     }
+
 }
 
 
-/* =================================================================================================================== */
+/**
+ * Carga el manejador de un clip especificado por nombre.
+ * 
+ * @private
+ * @param {string} name Nombre del clip.
+ * @returns {Promise<typeof Clip>} Tipo del clip cargado.
+ */
+async function _loadClip(name) {
+    // TODO: Introducir aquí posibles mapeos para bundles.
+    /*
+        _settings.bundles?.forEach(bundle => {
+            if (bundle.pattern.test(name)) {
+                loadBundle(bundle.path);
+            }
+        });
+    */
+
+    const errors = []
+
+    for (const path of [
+            `${_settings.basePath}/${name}.js`,
+            `${_settings.basePath}/${name}/index.js`]) {
+                
+        let proto
+
+        try {
+            ({ default: proto } = await import(path))
+        } catch (cause) {
+            errors.push(new ClipError(`Failed to import clip "${name}" from "${path}".`, {
+                code: ClipError.loadFailed,
+                cause
+            }))
+            continue
+        }
+
+        // Si la definición cargada no es válida, no se intenta la siguiente ruta.
+        if (proto === null || typeof proto !== 'object') {
+            throw new ClipError(`Invalid clip "${name}" in "${path}": default export must be a plain object.`, {
+                code: ClipError.loadFailed
+            })
+        }
+
+        // Se registra y devuelve el tipo cargado.
+        return clips.define(name, proto)
+    }
+
+    throw new ClipError(`All import attempts for clip "${name}" failed.`, {
+        code: ClipError.loadFailed,
+        cause: errors
+    })
+}
+
+
 /**
  * Imports styles for the specified clip.
  *
@@ -1132,3 +1142,7 @@ async function _importClipStyles(name, styles) {
 
     _styleElement.textContent += `\n/* ${name} */\n${styles}\n`;
 }
+
+
+// Exports
+export default clips

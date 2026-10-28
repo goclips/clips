@@ -1,5 +1,5 @@
-import clips from '../../../clips.js';
-import '../../../add-ons/views.js';
+import clips from '../../../core/clips.js';
+// import '../../../add-ons/views.js';
 
 /**
  * Ajustes de configuración.
@@ -14,12 +14,12 @@ clips.setup({
  * @type {RouteNode[]}
  * @constant
  */
-const routes = [
-    {
-        path: '/',
-        view: 'today'
-    }
-];
+// const routes = [
+//     {
+//         path: '/',
+//         view: 'today'
+//     }
+// ];
 
 /**
  * Objeto global de la aplicación.
@@ -30,18 +30,19 @@ const app = {
     start: async function() {
         console.log('Starting app...');
 
-        // Se incluye e inicializa el "viewport".
-        this.viewport = await clips.include('viewport', document.getElementById('app'), {
-            routes
-        });
+        // // Se incluye e inicializa el "viewport".
+        // this.viewport = await clips.include('viewport', document.getElementById('app'), {
+        //     routes
+        // });
 
-        // Se carga la ruta inicial.
-        this.viewport.open('/');
+        // // Se carga la ruta inicial.
+        // this.viewport.open('/');
+
+        const homeClip = await clips.create('home')
+        homeClip.include(document.querySelector('#app'))
     }
 
 };
 
 // Llamada al inicio de la aplicación una vez cargado el DOM.
-document.addEventListener('DOMContentLoaded', () => {
-    app.start();
-});
+document.addEventListener('DOMContentLoaded', () => app.start());
