@@ -1,9 +1,9 @@
 export default {
 
     styles: /*css*/`
-        home-clip {
-            color: #fff;
-            background-color: #333;
+        [data-clip="home"] {
+            color: #f00;
+            background-color: #888;
         }
     `,
 
