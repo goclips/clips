@@ -1092,6 +1092,10 @@ const clips = {
         return template.content;
     },
 
+    getRenderContext: function(clip) {
+        return new RenderContext(clip)
+    }
+
     /**
      * Incluye un clip o una plantilla en el elemento o selector especificado.
      * @param {string} name Nombre del clip o plantilla especificado.

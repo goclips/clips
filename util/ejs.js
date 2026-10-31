@@ -18,9 +18,9 @@ export default {
     compile: function(src) {
         let offset = 0, match;
         let body = '', mark, code;
-        const appendText = (text) => body += text ? `out.push(\`${esc.literal(text)}\`);` : '';
+        const append = (text) => body += text ? `out.push(\`${esc.literal(text)}\`);` : '';
         while ((match = ejsTagsRe.exec(src)) !== null) {
-            appendText(src.slice(offset, match.index));
+            append(src.slice(offset, match.index));
 
             mark = match[0][2]; // '%', '=', '-'
             code = match[0].slice(2 + (mark === '=' || mark === '-' ? 1 : 0), -2).trim();
@@ -35,7 +35,7 @@ export default {
 
             offset = match.index + match[0].length;
         }
-        appendText(src.slice(offset));
+        append(src.slice(offset));
         return new Function('out', 'locals', `with (locals) { ${body} }`);
     }
 

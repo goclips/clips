@@ -1,12 +1,15 @@
 // clips.js
 
+//  import ejs from '../../util/ejs.js'
+import escape from '../../util/escape.js'
+
 /**
  * Prefijo para especificar referencias a clips en inclusiones.
  * 
  * @private
  * @type {string}
  */
-// const _clipPrefix = 'clip:';
+const _clipPrefix = 'clip:';
 
 /**
  * Expresión para verificar si una cadena solo contiene espacios.
@@ -184,8 +187,7 @@ class Clip {
      *
      * @param {Element} target Target element.
      * @param {Object} [options={}] Additional options.
-     * @param {Clip.Position} [options.position=Clip.Position.end]
-     * Position relative to the target element.
+     * @param {Clip.Position} [options.position=Clip.Position.end] Position relative to the target element.
      * @returns {Promise<Clip>} Resolves to this clip after ready() completes.
      */
     async include(target, options = {}) {
@@ -201,12 +203,14 @@ class Clip {
     /**
      * Renders the clip.
      *
+     * @param {RenderContext} ctx Rendering context.
      * @param {Object} [options] Additional rendering options.
      * @returns {DocumentFragment|Element|string|Promise<DocumentFragment|Element|string>} Rendered content.
      */
-    async render(options) {
+    async render(ctx, options) {
         // TODO: Creo que la implementación por defecto debería intentar renderizar la plantilla por defecto.
         return /*html*/`<div data-clip="${this.clipName}"></div>`
+        // return _renderTemplate(this)
     }
 
     /**
@@ -444,19 +448,25 @@ class Clip {
  */
 async function _include(target, options = {}) {
     // Se valida el destino.
-    if (!target || target.nodeType !== Node.ELEMENT_NODE) {
-        throw new TypeError('Invalid target: must be an Element.')
+    if (!target || (target.nodeType !== Node.ELEMENT_NODE && target.nodeType !== Node.COMMENT_NODE)) {
+        throw new TypeError('Invalid target: must be an Element or Comment.')
     }
 
     // Se valida la posición especificada antes de renderizar.
     const position = options.position ?? Clip.Position.end
+
     if (!Object.values(Clip.Position).includes(position)) {
-        throw new RangeError(`Invalid position: ${position}.`)
+        throw new RangeError(`Invalid position: ${String(position)}.`)
+    }
+
+    // Los comentarios no pueden contener nodos.
+    if (target.nodeType === Node.COMMENT_NODE && (position === Clip.Position.start || position === Clip.Position.end)) {
+        throw new TypeError('Invalid position: start and end require an Element target.')
     }
 
     // Se comprueba las posiciones que requieren que el elemento destino esté contenido en otro elemento.
     if ([Clip.Position.before, Clip.Position.after, Clip.Position.replace].includes(position) && !target.parentNode) {
-        throw new ClipError('The target element must have a parent for this inclusion position.')
+        throw new ClipError(`Invalid target: must have a parent node for position "${position}".`)
     }
 
     // Se recupera el estado del clip.
@@ -465,13 +475,15 @@ async function _include(target, options = {}) {
     // Se genera la raíz si todavía no existe.    
     let root = state.root, fresh = false
     if (!root) {
-        let out
+        const ctx = new RenderContext(this)
         
+        let out
         try {
-            out = await this.render(options)
+            out = await this.render(ctx, options)
         } catch (cause) {
             throw new ClipError(`Unable to render clip "${this.clipName}".`, { cause });
         }
+
         if (out == null) {
             throw new ClipError(`Missing render output for clip "${this.clipName}".`)
         }
@@ -480,9 +492,11 @@ async function _include(target, options = {}) {
             root = out;
         } else {
             if (typeof out === 'string') {
-                const template = document.createElement('template')
-                template.innerHTML = out
-                out = template.content
+                ctx.print(out)
+                out = await ctx.resolve()
+                // const template = document.createElement('template')
+                // template.innerHTML = out
+                // out = template.content
             }
 
             if (out.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
@@ -761,6 +775,103 @@ class ClipError extends Error {
         }
     }
 }
+
+
+/* RENDER CONTEXT
+ * ================================================================================================================== */
+
+
+
+class RenderContext {
+
+    #out = []
+
+    #clip = null
+
+    #includes = []
+
+    constructor(clip) {
+        this.#clip = clip
+    }
+
+    include(name, options) {
+        const index = this.#includes.length
+        this.#includes.push({ name, options })
+
+        return `<!--[clip-slot:${index}]-->`
+    }
+    
+    async resolve() {
+        const template = document.createElement('template')
+        template.innerHTML = this.#out.join('')
+
+        const slots = new Map()
+
+        const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_COMMENT)
+
+        while (walker.nextNode()) {
+            const node = walker.currentNode
+            const match = /^\[clip-slot:(0|[1-9]\d*)\]$/.exec(node.data)
+
+            if (!match) {
+                continue
+            }
+
+            const index = Number(match[1])
+
+            if (index >= this.#includes.length || slots.has(index)) {
+                throw new Error(`Invalid include slot: ${node.data}`)
+            }
+
+            slots.set(index, node)
+        }
+
+        if (slots.size !== this.#includes.length) {
+            throw new Error(`Includes mismatch: ${slots.size} vs ${this.#includes.length}`)
+        }
+
+        for (let i = 0; i < this.#includes.length; i++) {
+            const { name, options } = this.#includes[i]
+
+            if (name.startsWith(_clipPrefix)) {
+                const clip = await clips.create(name.substring(_clipPrefix.length), options)
+
+                await clip.include(slots.get(i), { position: Clip.Position.replace, ...options })
+            } else {
+                const fragment = await clips.render(this.#clip, name, options)
+
+                slots.get(i).replaceWith(fragment)
+            }
+        }
+
+        return template.content
+    }
+
+    print(value, esc = false) {
+        value = String(value)
+        this.#out.push(esc ? this.escape(value) : value)
+    }
+
+    escape(value) {
+        return escape.html(value)
+    }
+
+    each(items, callback) {
+        const out = []
+
+        for (const item of items ?? []) {
+            const value = callback.call(this.#clip, item, out.length)
+
+            if (value != null) {
+                out.push(value)
+            }
+        }
+
+        return out.join('')
+    }
+
+}
+
 
 
 /* CLIPS OBJECT
