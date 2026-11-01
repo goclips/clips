@@ -2,8 +2,9 @@ export default {
 
     styles: /*css*/`
         [data-clip="today"] {
-            color: #00f;
-            background-color: #666;
+            /* color: #00f;
+            /* background-color: #666; */
+            padding: 8px;
         }
         [data-clip="today"] > .card {
 

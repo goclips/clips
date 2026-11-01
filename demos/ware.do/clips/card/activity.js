@@ -3,15 +3,18 @@ export default {
     extends: 'card',
 
     styles: /*css*/`
-        [data-clip="activity-card"] {
-            color: #00f;
-            background-color: #666;
+        [data-clip="card/activity"] {
+            color: #fff;
+            background-color: #3338;
+            padding: 8px;
+            border-radius: 8px;
+            margin: 8px;
         }
     `,
 
     async render(ctx, options = {}) {
         return /*html*/`
-            <div data-clip="activity-card card">${ctx.escape(options.data.description)}</div>
+            <div class="card" data-clip="activity-card">${ctx.escape(options.data.description)}</div>
         `
     }
 
