@@ -1085,14 +1085,12 @@ const clips = {
         if (typeof name !== "string" || !(name = name.trim())) {
             throw new TypeError('Invalid clip name: non-empty string required.');
         }
-        if (!_clipTypes[name]) {
-            await _loadClip(name);
-        }
-        const type = _clipTypes.get(name);
+        let type = _clipTypes.get(name);
         if (!type) {
-            throw new ClipError(`Clip "${name}" is not defined.`, {
-                code: ClipError.NOT_DEFINED
-            });
+            type = await _loadClip(name);
+            if (!type) {
+                throw new ClipError(`Clip "${name}" is not defined.`, { code: ClipError.notDefined });
+            }
         }
         return new type(options);
     },
