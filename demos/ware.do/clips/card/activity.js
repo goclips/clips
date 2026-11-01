@@ -11,7 +11,7 @@ export default {
 
     async render(ctx, options = {}) {
         return /*html*/`
-            <div data-clip="activity-card card">[ACTIVITY-CARD]</div>
+            <div data-clip="activity-card card">${ctx.escape(options.data.description)}</div>
         `
     }
 

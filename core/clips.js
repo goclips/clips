@@ -452,12 +452,12 @@ async function _include(target, options = {}) {
         throw new TypeError('Invalid target: must be an Element or Comment.')
     }
 
-    // Se valida la posición especificada antes de renderizar.
+    // Se valida la posición especificada en opciones antes de renderizar, luego se descarta.
     const position = options.position ?? Clip.Position.end
-
     if (!Object.values(Clip.Position).includes(position)) {
         throw new RangeError(`Invalid position: ${String(position)}.`)
     }
+    delete options.position
 
     // Los comentarios no pueden contener nodos.
     if (target.nodeType === Node.COMMENT_NODE && (position === Clip.Position.start || position === Clip.Position.end)) {
@@ -836,7 +836,7 @@ class RenderContext {
             if (name.startsWith(_clipPrefix)) {
                 const clip = await clips.create(name.substring(_clipPrefix.length), options)
 
-                await clip.include(slots.get(i), { position: Clip.Position.replace, ...options })
+                await clip.include(slots.get(i), { ...options, position: Clip.Position.replace })
             } else {
                 const fragment = await clips.render(this.#clip, name, options)
 
@@ -988,7 +988,10 @@ const clips = {
             throw new TypeError('Invalid clip name: expected path-like string without leading or trailing slash.')
         }
 
-        if (_clipTypes.has(name)) {
+        // Se permite una promesa pendiente, pero no un tipo ya definido.
+        const previous = _clipTypes.get(name)
+
+        if (previous?.prototype instanceof Clip) {
             throw new ClipError(`Clip "${name}" already defined.`, {
                 code: ClipError.alreadyDefined
             })
@@ -999,50 +1002,45 @@ const clips = {
             throw new TypeError('Invalid prototype: object required.')
         }
 
-        // Se valida y resuelve el tipo de clip base.
-        let base = proto.extends
+        // Se resuelve el tipo base del clip.
+        let baseClip = Clip
 
-        if (base !== undefined) {
-            if (typeof base !== 'string') {
+        if (proto.extends != null) {
+            let ext = proto.extends
+
+            if (typeof ext !== 'string') {
                 throw new TypeError(`Invalid extends: string required.`)
             }
 
-            base = base.trim()
+            ext = ext.trim()
 
-            if (!base) {
+            if (!ext) {
                 throw new TypeError(`Invalid extends: empty string.`)
             }
 
-            if (base === name) {
+            if (ext === name) {
                 throw new TypeError('Invalid extends: a clip cannot extend itself.')
             }
 
-            if (!_clipTypes.has(base)) {
-                await _loadClip(base)
+            baseClip = await _getClipType(ext)
 
-                if (!_clipTypes.has(base)) {
-                    throw new ClipError(`Invalid extends: clip "${base}" not defined.`, {
-                        code: ClipError.notDefined
-                    })
-                }
+            if (!baseClip) {
+                throw new ClipError(`Invalid extends: clip "${ext}" not defined.`, { code: ClipError.notDefined })
             }
         }
-
-        // Se determina el tipo base.
-        const B = _clipTypes.get(base) ?? Clip
 
         // Se admite un objeto plano o uno previamente vinculado a esta clase base.
         const parent = Object.getPrototypeOf(proto)
 
-        if (parent !== Object.prototype && parent !== B.prototype) {
+        if (parent !== Object.prototype && parent !== baseClip.prototype) {
             throw new TypeError('Invalid prototype: plain object or object linked to the base clip prototype required.')
         }
 
         // Se crea la clase del nuevo clip.
-        const C = class extends B {}
+        const C = class extends baseClip {}
 
         // Se establece el prototipo base para permitir el uso de super.
-        Object.setPrototypeOf(proto, B.prototype)
+        Object.setPrototypeOf(proto, baseClip.prototype)
 
         // Se obtienen los descriptores, excluyendo "constructor", "extends" y "styles".
         const desc = Object.getOwnPropertyDescriptors(proto)
@@ -1062,13 +1060,14 @@ const clips = {
         // Se importan la estilos vinculados al clip.
         await _importClipStyles(name, proto.styles);
 
-        // Se registra el constructor con el nombre del tipo de clip.
-        if (_clipTypes.has(name)) {
+        // Se comprueba que la entrada no haya cambiado durante la definición.
+        if (_clipTypes.get(name) !== previous) {
             throw new ClipError(`Clip "${name}" already defined.`, {
                 code: ClipError.alreadyDefined
             })
         }
 
+        // Se registra y devuelve el constructor del nuevo clip.
         _clipTypes.set(name, C);
         
         // Se devuelve el constructor del nuevo clip.
@@ -1083,16 +1082,13 @@ const clips = {
      */
     async create(name, options = {}) {
         if (typeof name !== "string" || !(name = name.trim())) {
-            throw new TypeError('Invalid clip name: non-empty string required.');
+            throw new TypeError('Invalid clip name: non-empty string required.')
         }
-        let type = _clipTypes.get(name);
-        if (!type) {
-            type = await _loadClip(name);
-            if (!type) {
-                throw new ClipError(`Clip "${name}" is not defined.`, { code: ClipError.notDefined });
-            }
+        let clip = await _getClipType(name)
+        if (!clip) {
+            throw new ClipError(`Clip "${name}" is not defined.`, { code: ClipError.notDefined })
         }
-        return new type(options);
+        return new clip(options)
     },
 
     /**
@@ -1109,6 +1105,35 @@ const clips = {
 
 }
 
+/**
+ * Comprueba si el tipo del clip especificado está cargado. Si no está registrado lo intenta cargar.
+ * 
+ * @private
+ * @param {string} name Nombre del clip.
+ * @returns {Promise<typeof Clip>} Tipo del clip cargado.
+ */
+async function _getClipType(name) {
+    const type = _clipTypes.get(name)
+
+    if (type) {
+        return type
+    }
+
+    const promise = _importClip(name)
+
+    _clipTypes.set(name, promise)
+
+    try {
+        return await promise
+
+    } catch (err) {
+        if (_clipTypes.get(name) === promise) {
+            _clipTypes.delete(name)
+        }
+
+        throw err
+    }
+}
 
 /**
  * Carga el manejador de un clip especificado por nombre.
@@ -1117,7 +1142,7 @@ const clips = {
  * @param {string} name Nombre del clip.
  * @returns {Promise<typeof Clip>} Tipo del clip cargado.
  */
-async function _loadClip(name) {
+async function _importClip(name) {
     // TODO: Introducir aquí posibles mapeos para bundles.
     /*
         _settings.bundles?.forEach(bundle => {
@@ -1147,7 +1172,7 @@ async function _loadClip(name) {
 
         // Si la definición cargada no es válida, no se intenta la siguiente ruta.
         if (proto === null || typeof proto !== 'object') {
-            throw new ClipError(`Invalid clip "${name}" in "${path}": default export must be a plain object.`, {
+            throw new ClipError(`Invalid clip "${name}" in "${path}": default export must be an object.`, {
                 code: ClipError.loadFailed
             })
         }
@@ -1252,6 +1277,10 @@ async function _importClipStyles(name, styles) {
     _styleElement.textContent += `\n/* ${name} */\n${styles}\n`;
 }
 
+// Global scope
+if (window) {
+    window.clips = clips
+}
 
 // Exports
 export default clips
