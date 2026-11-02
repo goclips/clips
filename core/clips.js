@@ -452,11 +452,13 @@ async function _include(target, options = {}) {
         throw new TypeError('Invalid target: must be an Element or Comment.')
     }
 
-    // Se valida la posición especificada en opciones antes de renderizar, luego se descarta.
+    // Se valida la posición especificada.
     const position = options.position ?? Clip.Position.end
     if (!Object.values(Clip.Position).includes(position)) {
         throw new RangeError(`Invalid position: ${String(position)}.`)
     }
+
+    // Se consume la posición.
     delete options.position
 
     // Los comentarios no pueden contener nodos.
@@ -553,6 +555,7 @@ async function _include(target, options = {}) {
         state.root = root
 
         // Referencia para depuración.
+        // TODO: Darle un pensada a la nomenclatura de la propiedad.
         Object.defineProperty(root, '__clip', {
             value: this,
             configurable: true
@@ -779,29 +782,105 @@ class ClipError extends Error {
 
 /* RENDER CONTEXT
  * ================================================================================================================== */
-
-
-
+/**
+ * Builds HTML output and resolves nested clip and template inclusions.
+ *
+ * Each context belongs to a clip and represents a single rendering operation. Inclusion markers must appear exactly 
+ * once in the generated HTML.
+ */
 class RenderContext {
 
+    /**
+     * HTML output chunks.
+     *
+     * @type {string[]}
+     */
     #out = []
 
+    /**
+     * Clip associated with this rendering operation.
+     *
+     * @type {Clip}
+     */
     #clip = null
 
+    /**
+     * Pending inclusions, in registration order.
+     *
+     * @type {Array<{name: string, options: Object}>}
+     */
     #includes = []
 
+    /**
+     * Whether resolution has started.
+     *
+     * @type {boolean}
+     */
+    #resolveStarted = false
+
+    /**
+     * Creates a rendering context associated with a clip.
+     *
+     * @param {Clip} clip Associated clip.
+     */
     constructor(clip) {
         this.#clip = clip
     }
 
+    /**
+     * Registers an inclusion and returns its HTML comment marker.
+     *
+     * Names beginning with the clip prefix identify clips. Other names identify templates.
+     *
+     * The returned marker must be incorporated into the HTML output. Inclusion options are shallow-copied when registered.
+     *
+     * @param {string} name Clip or template name.
+     * @param {Object} [options={}] Inclusion options.
+     * @returns {string} HTML comment marker.
+     */
     include(name, options) {
+        this.#assertResolveNotStarted()
+
         const index = this.#includes.length
         this.#includes.push({ name, options })
 
         return `<!--[clip-slot:${index}]-->`
     }
+
+    /**
+     * Appends a value to the HTML output.
+     *
+     * The value is converted to a string before optionally being escaped.
+     *
+     * @param {*} value Value to append.
+     * @param {boolean} [esc=false] Whether to escape HTML special characters.
+     * @returns {void}
+     */
+    print(value, esc = false) {
+        this.#assertResolveNotStarted()
+
+        value = String(value)
+        this.#out.push(esc ? this.escape(value) : value)
+    }
     
+    /**
+     * Parses the accumulated HTML and resolves all registered inclusions.
+     *
+     * Inclusion markers are located before resolving any inclusion.
+     * Inclusions are then resolved sequentially in registration order.
+     *
+     * The resulting nodes belong to a detached DocumentFragment.
+     *
+     * @returns {Promise<DocumentFragment>} Rendered HTML fragment.
+     * @throws {Error} If an inclusion marker is invalid, duplicated or missing.
+     */
     async resolve() {
+        if (this.#resolveStarted) {
+            throw new ClipError('Render context resolution has already started.')
+        }
+
+        this.#resolveStarted = true
+
         const template = document.createElement('template')
         template.innerHTML = this.#out.join('')
 
@@ -820,14 +899,14 @@ class RenderContext {
             const index = Number(match[1])
 
             if (index >= this.#includes.length || slots.has(index)) {
-                throw new Error(`Invalid include slot: ${node.data}`)
+                throw new ClipError(`Invalid include slot: ${node.data}`)
             }
 
             slots.set(index, node)
         }
 
         if (slots.size !== this.#includes.length) {
-            throw new Error(`Includes mismatch: ${slots.size} vs ${this.#includes.length}`)
+            throw new ClipError(`Includes mismatch: ${slots.size} vs ${this.#includes.length}`)
         }
 
         for (let i = 0; i < this.#includes.length; i++) {
@@ -847,20 +926,30 @@ class RenderContext {
         return template.content
     }
 
-    print(value, esc = false) {
-        value = String(value)
-        this.#out.push(esc ? this.escape(value) : value)
+    #assertResolveNotStarted() {
+        if (this.#resolveStarted) {
+            throw new ClipError('Cannot modify a render context after resolution has started.')
+        }
     }
 
-    escape(value) {
-        return escape.html(value)
-    }
-
+    /**
+     * Concatenates the results of a synchronous callback over an iterable.
+     *
+     * The callback receives each item and its zero-based iteration index,
+     * with the associated clip as its this value.
+     * Null and undefined results are omitted. Results are not HTML-escaped.
+     * Null or undefined items are treated as an empty iterable.
+     *
+     * @param {Iterable<*>|null|undefined} items Items to iterate over.
+     * @param {function(*, number): *} callback Synchronous rendering callback.
+     * @returns {string} Concatenated callback results.
+     */
     each(items, callback) {
         const out = []
-
+        
+        let index = 0
         for (const item of items ?? []) {
-            const value = callback.call(this.#clip, item, out.length)
+            const value = callback.call(this.#clip, item, index++)
 
             if (value != null) {
                 out.push(value)
@@ -870,8 +959,17 @@ class RenderContext {
         return out.join('')
     }
 
-}
+    /**
+     * Converts a value to a string and escapes HTML special characters.
+     *
+     * @param {*} value Value to escape.
+     * @returns {string} Escaped string.
+     */
+    escape(value) {
+        return escape.html(value)
+    }
 
+}
 
 
 /* CLIPS OBJECT
