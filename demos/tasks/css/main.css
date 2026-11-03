@@ -1,0 +1,44 @@
+:root {
+    /* Light Theme (default) */
+    --c1: #222;
+    --c2: #ee3;
+    --bg1: #f8f8f8;
+    --bg2: #e8e8e8;
+
+    /* Dark Theme */
+    --dark-c1: #fff;
+    --dark-c2: #ee3;
+    --dark-bg1: #242424;
+    --dark-bg2: #323232;
+
+    /* Common */
+    --border-radius: 4px;
+}
+
+:root[data-theme='dark'] {
+    --c1: var(--dark-c1);
+    --c2: var(--dark-c2);
+    --bg1: var(--dark-bg1);
+    --bg2: var(--dark-bg2);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+        --c1: var(--dark-c1);
+        --c2: var(--dark-c2);
+        --bg1: var(--dark-bg1);
+        --bg2: var(--dark-bg2);        
+    }
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    color: var(--c1);
+    background-color: var(--bg1);
+    overflow: hidden;
+    font-family: Roboto, Arial, Helvetica, sans-serif;
+    font-size: 16px;
+}
