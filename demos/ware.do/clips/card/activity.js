@@ -5,7 +5,7 @@ export default {
     styles: /*css*/`
         [data-clip="card/activity"] {
             color: #fff;
-            background-color: #3338;
+            background-color: #3339;
             padding: 8px;
             border-radius: 8px;
             margin: 8px;
@@ -14,7 +14,7 @@ export default {
 
     async render(ctx, options = {}) {
         return /*html*/`
-            <div class="card" data-clip="activity-card">${ctx.escape(options.data.description)}</div>
+            <div data-clip="activity-card" class="card">${ctx.escape(options.data.description)}</div>
         `
     }
 
