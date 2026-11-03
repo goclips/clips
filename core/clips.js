@@ -452,13 +452,11 @@ async function _include(target, options = {}) {
         throw new TypeError('Invalid target: must be an Element or Comment.')
     }
 
-    // Se valida la posición especificada.
+    // Se valida la posición especificada y se retira la opción para evitar arrastrarla.
     const position = options.position ?? Clip.Position.end
     if (!Object.values(Clip.Position).includes(position)) {
         throw new RangeError(`Invalid position: ${String(position)}.`)
     }
-
-    // Se consume la posición.
     delete options.position
 
     // Los comentarios no pueden contener nodos.
@@ -479,30 +477,27 @@ async function _include(target, options = {}) {
     if (!root) {
         const ctx = new RenderContext(this)
         
-        let out
+        let result
         try {
-            out = await this.render(ctx, options)
+            result = await this.render(ctx, options)
         } catch (cause) {
             throw new ClipError(`Unable to render clip "${this.clipName}".`, { cause });
         }
 
-        if (out == null) {
+        if (result == null) {
             throw new ClipError(`Missing render output for clip "${this.clipName}".`)
         }
 
-        if (out.nodeType === Node.ELEMENT_NODE) {
-            root = out;
+        if (result.nodeType === Node.ELEMENT_NODE) {
+            root = result;
         } else {
-            if (typeof out === 'string') {
-                ctx.print(out)
-                out = await ctx.resolve()
-                // const template = document.createElement('template')
-                // template.innerHTML = out
-                // out = template.content
+            if (typeof result === 'string') {
+                ctx.print(result)
+                result = await ctx.resolve()
             }
 
-            if (out.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
-                for (const node of out.childNodes) {
+            if (result.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+                for (const node of result.childNodes) {
                     if (node.nodeType === Node.ELEMENT_NODE) {
                         if (root) {
                             throw new ClipError('Multiple root elements are not allowed.')
@@ -525,8 +520,8 @@ async function _include(target, options = {}) {
         }
 
         // Se comprueba que el mismo elemento no esté asociado a otro clip.
-        const c = _roots.get(root)
-        if (c && c !== this) {
+        const clip = _roots.get(root)
+        if (clip && clip !== this) {
             throw new ClipError('Clip root already belongs to another clip.')
         }
 
@@ -1101,7 +1096,7 @@ const clips = {
         }
 
         // Se resuelve el tipo base del clip.
-        let baseClip = Clip
+        let BaseClip = Clip
 
         if (proto.extends != null) {
             let ext = proto.extends
@@ -1120,9 +1115,9 @@ const clips = {
                 throw new TypeError('Invalid extends: a clip cannot extend itself.')
             }
 
-            baseClip = await _getClipType(ext)
+            BaseClip = await _getClipType(ext)
 
-            if (!baseClip) {
+            if (!BaseClip) {
                 throw new ClipError(`Invalid extends: clip "${ext}" not defined.`, { code: ClipError.notDefined })
             }
         }
@@ -1130,15 +1125,15 @@ const clips = {
         // Se admite un objeto plano o uno previamente vinculado a esta clase base.
         const parent = Object.getPrototypeOf(proto)
 
-        if (parent !== Object.prototype && parent !== baseClip.prototype) {
+        if (parent !== Object.prototype && parent !== BaseClip.prototype) {
             throw new TypeError('Invalid prototype: plain object or object linked to the base clip prototype required.')
         }
 
         // Se crea la clase del nuevo clip.
-        const C = class extends baseClip {}
+        const C = class extends BaseClip {}
 
         // Se establece el prototipo base para permitir el uso de super.
-        Object.setPrototypeOf(proto, baseClip.prototype)
+        Object.setPrototypeOf(proto, BaseClip.prototype)
 
         // Se obtienen los descriptores, excluyendo "constructor", "extends" y "styles".
         const desc = Object.getOwnPropertyDescriptors(proto)
