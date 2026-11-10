@@ -1,696 +1,996 @@
-import ejs from './util/ejs.js';
-import esc from './util/escape.js';
+// clips.js
 
-/* Clip prototype
- * ================================================================================================================== */
-/**
- * Property symbol "eventListeners" of Clip object.
- * @type {symbol}
- * @const
- */
-const EVENT_LISTENERS = Symbol('eventListeners');
-
-/**
- * Función constructora, base de todo clip.
- * @param {Object} [options={}] Opciones de creación.
- * @constructor
- */
-function Clip(options = {}) {
-
-    /**
-     * Referencia al nodo raíz del clip.
-     * @type {Element}
-     * @private
-     */
-    this._root = null;
-
-    /**
-     * Referencia al clip padre o contenedor.
-     * @type {Clip}
-     * @private
-     */
-    this._parentClip = null;
-
-    /**
-     * Conjunto de subclips contenidos.
-     * @type {Set<Clip>}
-     * @private
-     */
-    this._childClips = new Set();
-
-    /**
-     * Tiempo de carga.
-     * @type {number}
-     * @private
-     */
-    this._loadTime = 0;
-
-    /**
-     * Manejadores de eventos por tipo.
-     * @type {Map<string, Set<Function>>}
-     * @private
-     */
-    Object.defineProperty(this, EVENT_LISTENERS, {
-        value: new Map(),
-        enumerable: false,
-        writable: false,
-        configurable: false
-    });
-
-
-    // Se llama a la función create.
-    this.create(options);
-}
-
-// Se definen los accesores de las propiedades anteriores.
-Object.defineProperties(Clip.prototype, {
-    root: {
-        /** @returns {Element|null} */
-        get() {
-            return this._root;
-        },
-        enumerable: true
-    },
-    parentClip: {
-        /** @returns {Clip|null} */
-        get() {
-            return this._parentClip;
-        },
-        enumerable: true
-    },
-    childClips: {
-        /** @returns {Clip[]} */
-        get() {
-            return [...this._childClips];
-        },
-        enumerable: true
-    },
-    childCount: {
-        /** @returns {number} */
-        get() {
-            return this._childClips.size;
-        }
-    }
-});
-
-/**
- * Nombre del tipo de clip.
- * @type {string}
- * @readonly
- */
-Object.defineProperty(Clip.prototype, 'clipName', {
-    
-})
-
-
-/* Constants of Clip
- * ================================================================================================================== */
-/**
- * Diferentes posiciones en las que incluir un clip en el DOM con respecto al elemento objetivo.
- * @enum {string}
- * @constant
- */
-Clip.Position = Object.freeze({
-    START:      'start',
-    END:        'end',
-    BEFORE:     'before',
-    AFTER:      'after',
-    REPLACE:    'replace'
-});
-
-/**
- * Nombre del fichero manejador por defecto.
- * @type {string}
- * @constant
- */
-Clip.defaultHandlerName = 'handler';
-
-/**
- * Nombre de plantilla por defecto.
- * @type {string}
- * @constant
- */
-Clip.defaultTemplateName = 'layout';
-
-/**
- * Nombre de hoja de estilos por defecto.
- * @type {string}
- * @constant
- */
-Clip.defaultStylesName = 'styles';
-
-
-/* Prototype functions
- * ================================================================================================================== */
-/**
- * Función de creación de nuevas instancias.
- * @param {Object} options Opciones de creación.
- */
-Clip.prototype.create = function(options) {};
-
-/**
- * Función para incluir el clip con respecto al elemento (target) especificado.
- * @param {Element} target Elemento especificado.
- * @param {Object} [options] Opciones de inclusión.
- * @param {Clip} [options.parentClip] Referencia al clip contenedor.
- * @param {Clip.Position} [options.position=Clip.Position.END] Posición de inclusión del clip con respecto al elemento 
- * (target) especificado. 
- */
-Clip.prototype.include = async function(target, options = {}) {
-    // Se comprueba que el target sea un Element.
-    if (!target || target.nodeType !== Node.ELEMENT_NODE) {
-        throw new TypeError('Invalid target: must be an Element.');
-    }
-    // Si todavía no se ha generado el elemento raíz se llama al render.
-    if (!this._root) {
-        let out;
-        try {
-            out = await this.render(options);
-        } catch (err) {
-            throw new Error(`Unable to render clip "${this.clipName}": ${err.message}`, {
-                cause: err
-            });
-        }
-        if (out?.nodeType === Node.ELEMENT_NODE) {
-            this._root = out;
-        } else {
-            let root;
-            if (typeof out === 'string') {
-                const template = document.createElement('template');
-                template.innerHTML = out;
-                out = template.content;
-            }
-            if (out?.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
-                for (let n = out.firstChild; n; n = n.nextSibling) {
-                    if (n.nodeType === Node.ELEMENT_NODE) {
-                        if (root) {
-                            throw new Error('Multiple root elements are not allowed.');
-                        }
-                        root = n;
-                    } else if (n.nodeType === Node.TEXT_NODE) {
-                        if (!WS_RE.test(n.data)) {
-                            throw new Error('Text outside the root element is not allowed.');
-                        }
-                    } else if (n.nodeType !== Node.COMMENT_NODE) {
-                        throw new Error(`Unsupported node type (${n.nodeType}) outside the root element.`);                    }
-                }
-            }
-            if (!root) {
-                throw new Error(`Missing clip root. Ensure render() returns an Element, or a DocumentFragment/HTML string with a single-root Element.`);
-            }
-            this._root = root;
-        }
-        // Se guarda la vinculación del clip con su elemento raíz.
-        _elementClips.set(this._root, this);
-        // Se guarda como propiedad del elemento para mejorar la visibilidad en depuración.
-        Object.defineProperty(this._root, '__clip', {
-            value: this,
-            writable: false,
-            configurable: true
-        });
-    }
-
-    // TODO: Añadir propiedades de estilo adicionales (options.style) y clases (options.class).
-    // TODO: Evaluar si incluir el parámetro hide o hidden para ocultar el elemento inicialmente.
-
-    // Se inserta el elemento en la posición especificada.
-    const position = options.position ?? Clip.Position.END; 
-    switch (position) {
-        case Clip.Position.AFTER:
-            target.after(this._root);
-            break;
-        case Clip.Position.BEFORE:
-            target.before(this._root);
-        break;
-        case Clip.Position.REPLACE:
-            if (this._root.contains(target)) {
-                target.before(this._root);
-                target.remove();
-            } else {
-                target.replaceWith(this._root);
-            }
-            break;
-        case Clip.Position.START:
-            target.prepend(this._root);
-            break;
-        case Clip.Position.END:
-            target.append(this._root);
-            break;
-        default:
-            throw new RangeError(`Invalid position: ${position}.`);
-    }
-
-    // Se añade al clip padre o contenedor. Si no se especifica, se busca en los elementos ascendientes.
-    (options.parentClip || _closestClip(this._root))?._appendClip(this);
-
-    // Llamada al método ready.
-    this.ready(options);
-
-    // Se evalua si emitir el evento "attach".
-    window.cancelAnimationFrame(this._attachReq);
-    if (this.root.isConnected) {
-        const parent = this.root.parentNode;
-        this._attachReq = window.requestAnimationFrame(() => {
-            if (!this.root || !this.root.isConnected || this.root.parentNode !== parent) {
-                return;
-            }
-            _reflow(this.root);
-            this._attachReq = window.requestAnimationFrame(() => {
-                if (!this.root || !this.root.isConnected || this.root.parentNode !== parent) {
-                    return;
-                }
-                this.fire('attach', true);
-                // TODO: Al propagar el evento habría que asegurarse que los clips contenidos siguen enganchados, si no 
-                // habría que evitar la emisión del evento. En principio si el elemento se ha desenganchado del elemento
-                // padre, la vinculación entre clips no debería existir tampoco de forma que el evento no se propagaría,
-                // pero es importante tenerlo en cuenta.
-            });
-        });
-    }
-
-    // Se inicia la carga de datos adicionales.
-    this._load(options);
-
-    // Se devuelve la instancia del propio clip.
-    return this;
-};
-
-/**
- * Renderiza el clip. Por defecto intentará renderizar la plantilla por defecto (/layout.ejs) localizada en la misma 
- * ubicación que el manejador del clip. 
- * @param {Object} [options] Opciones adicionales de renderizado.
- * @returns {Promise<DocumentFragment|Element|string>} Devuelve un fragmento, un elemento o directamente código HTML.
- */
-Clip.prototype.render = async function(options) {
-    return clips.render(this, `${this.clipName}/${Clip.defaultTemplateName}`, options);
-};
-
-/**
- * Clip preparado después de la primera renderización. Implementa aquí la inicialización de la estructura DOM y añade el 
- * tratamiento de eventos necesario.  
- */
-Clip.prototype.ready = function(options) {};
-
-/**
- * Carga de datos.
- * @param {Object} options Opciones adicionales.
- */
-Clip.prototype.load = async function(options) {};
-
-/**
- * Carga de datos (envoltorio). Llama a la carga, actualiza el tiempo de carga y llama a la actualización.
- * @param {Object} options Opciones adicionales.
- * @private
- */
-Clip.prototype._load = async function(options) {
-    const data = await this.load(options);
-    this._loadTime = Date.now();
-    return this.update(data === undefined ? options : { ...options, data });
-};
-
-/**
- * Actualiza la representación visual del clip.
- * @param {Object} options Opciones adicionales.
- */
-Clip.prototype.update = async function(options) {};
-
-/**
- * Inicia la recarga del clip.
- * @param {Object} options Opciones adicionales.
- */
-Clip.prototype.reload = async function(options) {
-    this.clear(options);
-    return this._load(options);
-};
-
-/**
- * Limpia el contenido del clip y llama de nuevo a la renderización.
- * @param {Object} options Opciones adicionales.
- */
-Clip.prototype.clear = function(options) {
-    if (!this.root) {
-        throw new ClipError('No root element', { code: ClipError.ROOT_REQUIRED });
-    }
-    const root = this.render();
-    this._clearAll();
-
-    // try {
-    //     // Se comprueba que haya raíz.
-    //     if (!this.root) {
-    //         throw new Error('No root element');
-    //     }
-    //     // Se renderiza nuevamente la vista.
-    //     /** @type {HTMLElement} */
-    //     const root = this.render(options);
-    //     // Se sustituye el contenido anterior de la vista por el nuevo sin modificar la raíz.
-    //     this._clearAll();
-    //     this.root.append(...root.childNodes);
-    //     // Se llama a la función ready de nuevo.
-    //     this.ready(this.root, options);
-    //     this.fire('ready');
-    // } catch (err) {
-    //     console.error(`Unable to update view "${this.__name}":`, err);
-    //     this._fireError(err);
-    // } 
-};
-
-/**
- * ...
- */
-Clip.prototype.toggle = function(options) {};
-
-/**
- * ...
- */
-Clip.prototype.isVisible = function(options) {};
-
-/**
- * ...
- */
-Clip.prototype.remove = function(options) {};
-
-/**
- * Añade un nuevo subclip.
- * @param {Clip} clip Clip especificado.
- * @private
- */
-Clip.prototype._appendClip = function(clip) {
-    if (clip._parentClip) {
-        clip._parentClip._removeClip(clip);
-    }
-    this._childClips.add(clip);
-    clip._parentClip = this;
-};
-
-/**
- * Elimina el subclip especificado.
- * @param {Clip} clip Clip especificado.
- * @private
- */
-Clip.prototype._removeClip = function(clip) {
-    if (this._childClips.delete(clip)) {
-        clip._parentClip = null;
-    }
-};
-
-/**
- * ...
- */
-Clip.prototype.removeAll = function() {
-    for (let c of this._childClips) {
-        this._childClips.delete(c);
-        c._parentClip = null;
-    }
-    // let c;
-    // while (c = this.childClips.shift()) {
-    //     if (uix.contains(this._root, v.root)) {
-    //         c.destroy();
-    //     }
-    // }
-    // uix.empty(this._root);
-};
-
-/**
- * ...
- */
-Clip.prototype.destroy = function(options) {
-    // TODO: ...
-};
-
-
-// Scroll
-Clip.prototype.saveScroll = function() {};
-
-Clip.prototype.restoreScroll = function() {};
-
-
-/* Render Context
- * ================================================================================================================== */
-/**
- * Contexto de renderizado.
- * @param {Object} [options] Opciones de creación.
- */
-function RenderContext(options = {}) {
-    this.includes = [];
-}
-
-/**
- * Añade una nueva inclusión de clip al contexto de renderizado.
- * @param {*} name 
- * @param {*} options 
- * @returns 
- */
-RenderContext.prototype.include = function(name, options) {
-    this.includes.push({ name, options });
-    return '<clip-slot></clip-slot>';
-};
-
-
-/* DOM-Like Event Model
- * ================================================================================================================== */
-/**
- * Clip event.
- * @param {string} type Event type.
- * @param {{ detail?: any, cancelable?: boolean }=} [options] Options.
- */
-function ClipEvent(type, options={}) {
-    if (typeof type !== 'string' || type.length === 0) {
-        throw new TypeError('Invalid event type: a non-empty string is required.');
-    }
-    Object.defineProperties(this, {
-        type: {
-            value: type,
-            enumerable: true,
-            writable: false,
-            configurable: false
-        },
-        detail: {
-            value: options.detail,
-            enumerable: true,
-            writable: true,
-            configurable: true
-        },
-        target: {
-            value: undefined,
-            enumerable: false,
-            writable: false,
-            configurable: true
-        },
-        currentTarget: {
-            value: undefined,
-            enumerable: false,
-            writable: false,
-            configurable: true
-        }
-    });
-}
-
-/**
- * Añade un nuevo manejador para el evento del tipo o nombre especificado.
- * @param {string} type Tipo o nombre de evento especificado.
- * @param {(event: Event) => void} callback Función manejadora del tipo de evento especificado a añadir.
- */
-Clip.prototype.addEventListener = Clip.prototype.on = function(type, callback) {
-    if (typeof type !== 'string' || type.length === 0) {
-        throw new TypeError('Invalid event type: a non-empty string is required.');
-    }
-    if (typeof callback !== 'function') {
-        throw new TypeError('Invalid event listener: a callback function is required.');
-    }
-    let bucket = this[EVENT_LISTENERS].get(type);
-    if (!bucket) {
-        this[EVENT_LISTENERS].set(type, bucket = new Set());
-    }
-    bucket.add(callback);
-};
-
-/**
- * Elimina el manejador de evento especificado.
- * @param {string} type Tipo o nombre de evento especificado.
- * @param {(event: Event) => void} callback Función manejadora del tipo de evento especificado a eliminar.
- */
-Clip.prototype.removeEventListener = Clip.prototype.off = function(type, callback) {
-    if (typeof type !== 'string' || type.length === 0) {
-        throw new TypeError('Invalid event type: a non-empty string is required.');
-    }
-    if (typeof callback !== 'function') {
-        throw new TypeError('Invalid event listener: a callback function is required.');
-    }
-    const bucket = this[EVENT_LISTENERS].get(type);
-    if (bucket) {
-        bucket.delete(callback);
-        if (bucket.size === 0) {
-            this[EVENT_LISTENERS].delete(type);
-        }
-    }    
-};
-
-/**
- * Emite el evento especificado.
- * @param {string|ClipEvent|{ type: string, detail?: any }} Evento especificado.
- * @param {boolean|'post'} [spread] Indica si propagar el evento a los clips contenidos y cómo hacer el recorrido, 
- * si en pre-orden (cualquier valor "truly") o en post-orden ("post").
- */
-Clip.prototype.dispatchEvent = Clip.prototype.fire = function(event, spread) {
-    // Normalización del parámetro "event".
-    if (!(event instanceof ClipEvent)) {
-        if (typeof event === 'string' && event.length > 0) {
-            event = new ClipEvent(event);
-        } else if (typeof event === 'object' && event !== null 
-                && typeof event.type === 'string' && event.type.length > 0) {
-            const ev = new ClipEvent(event.type, { detail: event.detail });
-            for (const key of Object.keys(event)) {
-                if (['type', 'target', 'currentTarget'].includes(key)) {
-                    console.warn(`Event property "${key}" is reserved.`);
-                    continue;
-                }
-                ev[key] = event[key];
-            }
-            event = ev;
-        } else {
-            throw new TypeError('Invalid event format: a non-empty string, an object with a string "type" property, or an instance of ClipEvent is required.');
-        }
-    }
-
-    // Solo se define la propiedad "target" en la primera llamada y se mantiene en todo el procesamiento del evento.
-    if (!('target' in event) || event.target == null) {
-        Object.defineProperty(event, 'target', {
-            value: this,
-            enumerable: true
-        });
-    }
-
-    // Se evalua si propagar el evento primero a los clips contenidos (post-order).
-    if (spread === 'post') {
-        _spreadEvent.call(this, event, spread);
-    }
-
-    // Se procesa el evento.
-    const bucket = this[EVENT_LISTENERS].get(event.type); 
-    if (bucket) {
-        Object.defineProperty(event, 'currentTarget', {
-            value: this,
-            writable: true,
-            enumerable: true
-        });
-        for (const callback of [...bucket]) {
-            try {
-                callback.call(this, event);
-            } catch (err) {
-                console.error(`Error calling event listener "${event.type}" in clip "${this.clipName}":`, err);
-            }
-        }
-        event.currentTarget = null;
-    }
-
-    // Se evalua si propagar el evento a los clips contenidos (pre-order). 
-    if (spread && spread !== 'post') {
-        _spreadEvent.call(this, event, spread);
-    }
-};
-
-/**
- * Propaga el evento especificado a los clips contenidos en el clip (this).
- * @param {ClipEvent} event Evento de clip.
- * @param {boolean|'post'} [spread=false] Indica si propagar el evento y cómo recorrer la jerarquia de clips, si en pre-orden 
- * (cualquier valor "truly") o en post-orden (literal "post").
- * @private
- */
-function _spreadEvent(event, spread) {
-    for (const clip of [...this._childClips]) {
-        clip.fire(event, spread);
-    }
-}
-
-
-/* Constants
- * ================================================================================================================== */
-/**
- * Formato del nombre de los clips (path-like), uno o varios segmentos separados 
- * por "/", cada segmento: [A-Za-z0-9_-]+
- * @type {RegExp}
- * @constant
- */ 
-const CLIP_NAME_RE = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
-
-/**
- * Longitud máxima permitida para los nombres de clip.
- * @type {number}
- * @constant
- */
-const CLIP_NAME_MAX_LENGTH = 256;
+// import ejs from './util/ejs.js'
+import escape from './util/escape.js'
 
 /**
  * Prefijo para especificar referencias a clips en inclusiones.
+ * 
+ * @private
  * @type {string}
- * @constant
  */
-const CLIP_PREFIX = 'clip:';
+const _clipPrefix = 'clip:';
 
 /**
  * Expresión para verificar si una cadena solo contiene espacios.
+ * 
+ * @private
  * @type {RegExp}
- * @constant  
  */
-const WS_RE = /^\s*$/;
+// const _whitespaceRegexp = /^\s*$/;
 
-/* ------------------------------------------------------------------------------------------------------------------ */
+/**
+ * Maps root elements to clips.
+ * 
+ * @private
+ * @type {WeakMap<HTMLElement, Clip>}
+ */
+const _roots = new WeakMap()
+
+/**
+ * Stores private state for clips.
+ * 
+ * @private
+ * @type {WeakMap<Clip, {
+ *     root: HTMLElement|null,
+ *     listeners: Map,
+ *     loadStarted: false,
+ *     loadTime: 0 
+ * }>}
+ */
+const _states = new WeakMap()
+
+/**
+ * Shared style element containing the styles of registered clips.
+ *
+ * @private
+ * @type {HTMLStyleElement|undefined}
+ */
+let _styleElement
+
+
+/**
+ * Base class for clips.
+ */
+class Clip {
+
+    /**
+     * Available inclusion positions.
+     *
+     * @enum {string}
+     */
+    static Position = Object.freeze({
+        start: 'start',
+        end: 'end',
+        before: 'before',
+        after: 'after',
+        replace: 'replace'
+    })
+    
+    /**
+     * Creates a Clip instance.
+     *
+     * @param {Object} [options={}] Creation options.
+     */
+    constructor(options = {}) {
+        _states.set(this, {
+            root: null,
+            listeners: new Map(),
+            loadStarted: false,
+            loadTime: 0
+        })
+
+        this.create(options)
+    }
+
+    /**
+     * Clip root element.
+     *
+     * @type {Element|null}
+     * @readonly
+     */
+    get root() {
+        return _states.get(this).root
+    }
+
+    /**
+     * Clip type name.
+     *
+     * @type {string}
+     * @readonly
+     */
+    get clipName() {
+        return this.constructor.name
+    }
+
+    /**
+     * Closest ancestor clip.
+     *
+     * @type {Clip|null}
+     * @readonly
+     */
+    get parentClip() {
+        for (let element = this.root?.parentElement; element; element = element.parentElement) {
+            const clip = _roots.get(element)
+
+            if (clip) {
+                return clip
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Immediate child clips, excluding their descendants.
+     *
+     * @type {Clip[]}
+     * @readonly
+     */
+    get childClips() {
+        const clips = []
+
+        const collect = element => {
+            const clip = _roots.get(element)
+
+            if (clip) {
+                clips.push(clip)
+                return
+            }
+
+            for (const child of element.children) {
+                collect(child)
+            }
+        }
+
+        const root = this.root
+
+        if (root) {
+            for (const child of root.children) {
+                collect(child)
+            }
+        }
+
+        return clips
+    }
+
+    /**
+     * Number of immediate child clips.
+     *
+     * @type {number}
+     * @readonly
+     */
+    get childCount() {
+        return this.childClips.length
+    }
+
+    /**
+     * Timestamp of the last successful data load, or zero if none has completed.
+     *
+     * @type {number}
+     * @readonly
+     */
+    get loadTime() {
+        return _states.get(this).loadTime
+    }
+
+    /**
+     * Initializes the clip instance. Called by the constructor.
+     * 
+     * @param {Object} options Creation options.
+     * @returns {void}
+     */
+    create(options) {}
+
+    /**
+     * Includes the clip relative to the specified target element.
+     *
+     * @param {Element} target Target element.
+     * @param {Object} [options={}] Additional options.
+     * @param {Clip.Position} [options.position=Clip.Position.end] Position relative to the target element.
+     * @returns {Promise<Clip>} Resolves to this clip after ready() completes.
+     */
+    async include(target, options = {}) {
+        options = { ...options }
+
+        const state = _states.get(this);
+        const previous = state.includePromise ?? Promise.resolve();
+
+        return await (state.includePromise = previous.catch(() => {}).then(() => 
+            _include.call(this, target, options)));
+    }
+
+    /**
+     * Renders the clip.
+     *
+     * @param {RenderContext} ctx Rendering context.
+     * @param {Object} [options] Additional rendering options.
+     * @returns {DocumentFragment|Element|string|Promise<DocumentFragment|Element|string>} Rendered content.
+     */
+    async render(ctx, options) {
+        // TODO: Creo que la implementación por defecto debería intentar renderizar la plantilla por defecto.
+        return /*html*/`<div data-clip="${this.clipName}"></div>`
+        // return _renderTemplate(this)
+    }
+
+    /**
+     * Initializes the generated content and adds the necessary event listeners. Called on every inclusion.
+     *
+     * @param {Object} [options] Additional options.
+     * @param {boolean} [options.fresh=false] Whether the root element was newly created.
+     * @returns {void|Promise<void>}
+     */
+    ready(options) {}
+
+    /**
+     * Loads additional data.
+     *
+     * @param {Object} options Additional options.
+     * @returns {*|Promise<*>} Data passed to update().
+     */
+    async load(options) {}
+
+    /**
+     * Updates the clip content after loading additional data.
+     *
+     * @param {Object} options Additional options.
+     * @param {*} options.data Loaded data.
+     * @returns {void|Promise<void>}
+     */
+    async update(options) {}
+
+    /**
+     * Initiates the reload of the clip.
+     *
+     * @param {Object} options Additional options.
+     * @returns {Promise<void>}
+     */
+    async reload(options) {
+        // ...
+    }
+
+    /**
+     * Clears the clip content so it can be rendered again.
+     *
+     * @param {Object} options Additional options.
+     */
+    clear(options) {
+        // ...
+    }
+
+    /**
+     * Shows or hides the clip.
+     *
+     * @param {boolean} [show] Whether to show the clip. If omitted, toggles its visibility.
+     */
+    toggle(show) {
+        // ...
+    }
+
+    /**
+     * Checks whether the clip is visible.
+     *
+     * @returns {boolean} Whether the clip is visible.
+     */
+    isVisible() {
+        // ...
+    }
+
+    /**
+     * Removes the clip from the DOM.
+     */
+    remove() {
+        // ...
+    }
+
+    /**
+     * Destroys the clip and releases its resources.
+     */
+    destroy() {
+        // ...
+    }
+
+    /**
+     * Registers an event listener.
+     *
+     * @param {string} type Event type.
+     * @param {function(ClipEvent): void} listener Event listener.
+     * @returns {Clip} This clip.
+     */
+    on(type, listener) {
+        if (typeof type !== 'string' || type.length === 0) {
+            throw new TypeError('Invalid event type: a non-empty string is required.')
+        }
+
+        if (typeof listener !== 'function') {
+            throw new TypeError('Invalid event listener: a function is required.')
+        }
+
+        const state = _states.get(this)
+
+        let listeners = state.listeners.get(type)
+
+        if (!listeners) {
+            state.listeners.set(type, listeners = new Set())
+        }
+
+        listeners.add(listener)
+
+        return this
+    }
+
+    /**
+     * Removes an event listener.
+     *
+     * @param {string} type Event type.
+     * @param {function(ClipEvent): void} listener Event listener.
+     * @returns {Clip} This clip.
+     */
+    off(type, listener) {
+        if (typeof type !== 'string' || type.length === 0) {
+            throw new TypeError('Invalid event type: a non-empty string is required.')
+        }
+
+        if (typeof listener !== 'function') {
+            throw new TypeError('Invalid event listener: a function is required.')
+        }
+
+        const state = _states.get(this)
+        const listeners = state.listeners.get(type)
+
+        if (listeners) {
+            listeners.delete(listener)
+
+            if (listeners.size === 0) {
+                state.listeners.delete(type)
+            }
+        }
+
+        return this
+    }
+
+    /**
+     * Fires an event synchronously.
+     *
+     * @param {string|ClipEvent|{type: string, detail?: *}} event Event to fire.
+     * @param {Object} [options={}] Dispatch options.
+     * @param {boolean|'post'} [options.spread=false]
+     * Whether to propagate to descendants: true for preorder, 'post' for postorder.
+     * @returns {Clip} This clip.
+     */
+    fire(event, { spread = false } = {}) {
+        // Se normaliza el evento.
+        if (!(event instanceof ClipEvent)) {
+            if (typeof event === 'string') {
+                event = new ClipEvent(event)
+            } else if (typeof event === 'object' && event !== null && typeof event.type === 'string') {
+                event = new ClipEvent(event.type, event.detail)
+            } else {
+                throw new TypeError(
+                    'Invalid event: expected a type string, a ClipEvent, or an object with a string "type" property.'
+                )
+            }
+        }
+
+        // Se validan las opciones adicionales.
+        if (spread !== false && spread !== true && spread !== 'post') {
+            throw new TypeError('Invalid event spread: expected false, true, or "post".')
+        }
+
+        const eventState = _eventStates.get(event)
+
+        // Se impide emitir la misma instancia del evento mientras se está procesando.
+        if (eventState.target !== null) {
+            throw new ClipError('The event is already being dispatched.')
+        }
+
+        const dispatch = clip => {
+            // Se propaga en postorden.
+            if (spread === 'post') {
+                for (const child of clip.childClips) {
+                    dispatch(child)
+                }
+            }
+
+            // Se ejecutan los listeners de este clip.
+            const state = _states.get(clip)
+            const listeners = state.listeners.get(event.type)
+
+            if (listeners) {
+                const previousTarget = eventState.currentTarget
+                eventState.currentTarget = clip
+
+                try {
+                    for (const listener of [...listeners]) {
+                        try {
+                            listener.call(clip, event)
+                        } catch (err) {
+                            console.error(
+                                `Error calling event listener "${event.type}" in clip "${clip.clipName}":`,
+                                err
+                            )
+                        }
+                    }
+                } finally {
+                    eventState.currentTarget = previousTarget
+                }
+            }
+
+            // Se propaga en preorden.
+            if (spread === true) {
+                for (const child of clip.childClips) {
+                    dispatch(child)
+                }
+            }
+        }
+
+        eventState.target = this
+
+        try {
+            dispatch(this)
+        } finally {
+            eventState.target = null
+            eventState.currentTarget = null
+        }
+
+        return this
+    }
+
+}
+
+
+/**
+ * Performs the clip inclusion.
+ *
+ * @private
+ * @this {Clip}
+ * @see Clip#include
+ */
+async function _include(target, options = {}) {
+    // Se valida el destino.
+    if (!target || (target.nodeType !== Node.ELEMENT_NODE && target.nodeType !== Node.COMMENT_NODE)) {
+        throw new TypeError('Invalid target: must be an Element or Comment.')
+    }
+
+    // Se valida la posición especificada y se retira la opción para evitar arrastrarla.
+    const position = options.position ?? Clip.Position.end
+    if (!Object.values(Clip.Position).includes(position)) {
+        throw new RangeError(`Invalid position: ${String(position)}.`)
+    }
+    delete options.position
+
+    // Los comentarios no pueden contener nodos.
+    if (target.nodeType === Node.COMMENT_NODE && (position === Clip.Position.start || position === Clip.Position.end)) {
+        throw new TypeError('Invalid position: start and end require an Element target.')
+    }
+
+    // Se comprueba las posiciones que requieren que el elemento destino esté contenido en otro elemento.
+    if ([Clip.Position.before, Clip.Position.after, Clip.Position.replace].includes(position) && !target.parentNode) {
+        throw new ClipError(`Invalid target: must have a parent node for position "${position}".`)
+    }
+
+    // Se recupera el estado del clip.
+    const state = _states.get(this)
+
+    // Se genera la raíz si todavía no existe.    
+    let root = state.root, fresh = false
+    if (!root) {
+        const ctx = new RenderContext(this)
+        
+        let result
+        try {
+            result = await this.render(ctx, options)
+        } catch (cause) {
+            throw new ClipError(`Unable to render clip "${this.clipName}".`, { cause });
+        }
+
+        if (result == null) {
+            throw new ClipError(`Missing render output for clip "${this.clipName}".`)
+        }
+
+        if (result.nodeType === Node.ELEMENT_NODE) {
+            root = result;
+        } else {
+            if (typeof result === 'string') {
+                ctx.print(result)
+                result = await ctx.resolve()
+            }
+
+            if (result.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+                for (const node of result.childNodes) {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        if (root) {
+                            throw new ClipError('Multiple root elements are not allowed.')
+                        }
+                        root = node
+                    } else if (node.nodeType === Node.TEXT_NODE) {
+                        if (node.data.trim().length > 0) {
+                            throw new ClipError('Text outside the root element is not allowed.')
+                        }
+                    } else if (node.nodeType !== Node.COMMENT_NODE) {
+                        throw new ClipError(`Unsupported node type (${node.nodeType}) outside the root element.`)
+                    }
+                }
+            }
+        }
+
+        if (!root) {
+            throw new ClipError('Missing clip root: render() must return an Element, ' + 
+                'or a DocumentFragment/HTML string containing a single root element.')
+        }
+
+        // Se comprueba que el mismo elemento no esté asociado a otro clip.
+        const clip = _roots.get(root)
+        if (clip && clip !== this) {
+            throw new ClipError('Clip root already belongs to another clip.')
+        }
+
+        // Se identifica el elemento raíz del clip.
+        root.setAttribute('data-clip', this.clipName)
+
+        // Se indica que la raíz es de reciente creación.
+        fresh = true
+    }
+
+    // El destino puede haber cambiado durante el renderizado.
+    if ([Clip.Position.before, Clip.Position.after, Clip.Position.replace].includes(position) && !target.parentNode) {
+        throw new ClipError('The target element must have a parent for this inclusion position.')
+    }
+
+    // Se rechazan destinos dentro de la propia raíz.
+    if (root.contains(target)) {
+        throw new ClipError('The target element cannot be contained within the clip root.')
+    }
+
+    if (fresh) {
+        // Se vincula el elemento raíz con la instancia del clip. 
+        _roots.set(root, this)
+
+        // Se guarda el elemento raíz en el estado interno de la instancia.
+        state.root = root
+
+        // Referencia para depuración.
+        // TODO: Darle un pensada a la nomenclatura de la propiedad.
+        Object.defineProperty(root, '__clip', {
+            value: this,
+            configurable: true
+        })
+    } 
+
+    // Se guarda si la raíz estaba conectada antes de incluirla en el destino.
+    const wasConnected = root.isConnected
+
+    // Receptores de eventos.
+    const eventTargets = {
+        detach: [], attach: []        
+    }
+
+    // Se inserta la raíz.
+    switch (position) {
+        case Clip.Position.after:
+            target.after(root)
+            break
+
+        case Clip.Position.before:
+            target.before(root)
+            break
+
+        case Clip.Position.replace:
+            const connected = target.isConnected
+
+            if (target.contains(root)) {
+                target.before(root)
+                target.remove()
+            } else {
+                target.replaceWith(root)
+            }
+
+            if (connected) {
+                const collect = element => {
+                    for (const child of [...element.children]) {
+                        collect(child)
+                    }
+                    
+                    const clip = _roots.get(element)
+                    if (clip) {
+                        eventTargets.detach.push(clip)
+                    }
+                }
+
+                collect(target);
+            }
+            break
+
+        case Clip.Position.start:
+            target.prepend(root)
+            break
+
+        case Clip.Position.end:
+            target.append(root)
+            break
+    }
+
+    // Se determina si emitir el evento "attach" o "detach" sobre el clip incluído y los clips contenidos.
+    const isConnected = root.isConnected
+    if (isConnected !== wasConnected) {
+        const collect = element => {
+            const clip = _roots.get(element)
+
+            if (clip && isConnected) {
+                eventTargets.attach.push(clip);
+            }
+
+            for (const child of element.children) {
+                collect(child)
+            }
+
+            if (clip && !isConnected) {
+                eventTargets.detach.push(clip);
+            }
+        }
+
+        collect(root)
+    }
+
+    // Se emiten los eventos correspondientes.
+    for (const event of Object.keys(eventTargets)) {
+        for (const clip of eventTargets[event]) {
+            // TODO: Evaluar que pasa si la propagación del evento falla.
+            clip.fire(event);
+        }    
+    }
+
+    // Se llama al ready en cada inclusión.
+    try {
+        await this.ready({ ...options, fresh, reload: false })
+    } catch (err) {
+        throw new ClipError(`Unable to ready clip "${this.clipName}".`, { cause: err })
+    }
+
+    // Se inicia la carga de datos adicionales.
+    if (!state.loadStarted) {
+        state.loadStarted = true;
+
+        void (async () => {
+            let data
+            try {
+                data = await this.load({ ...options, reload: false })
+                state.loadTime = Date.now()            
+            } catch (cause) {
+                throw new ClipError(`Unable to load data for clip "${this.clipName}".`, { cause })
+            }
+
+            try {
+                await this.update({ ...options, data, reload: false })
+            } catch (cause) {
+                throw new ClipError(`Unable to update clip "${this.clipName}".`, { cause })
+            }
+        })().catch(err => {
+            console.error(err);
+        })
+    }
+    
+    // Se devuelve la propia instancia.
+    return this
+}
+
+
+/* CLIP EVENT
+ * ================================================================================================================== */
+/**
+ * Internal event states.
+ * 
+ * @private
+ * @type {WeakMap<ClipEvent, {
+ *     target: Clip|null,
+ *     currentTarget: Clip|null
+ * }>}
+ */
+const _eventStates = new WeakMap()
+
+/**
+ * Event dispatched by a clip.
+ */
+class ClipEvent {
+
+    /**
+     * Creates a clip event.
+     *
+     * @param {string} type Event type.
+     * @param {*} [detail] Event data.
+     */
+    constructor(type, detail) {
+        if (typeof type !== 'string' || type.length === 0) {
+            throw new TypeError('Invalid event type: a non-empty string is required.')
+        }
+
+        _eventStates.set(this, {
+            target: null,
+            currentTarget: null
+        })
+
+        Object.defineProperties(this, {
+            type: {
+                value: type,
+                enumerable: true
+            },
+            detail: {
+                value: detail,
+                enumerable: true
+            }
+        })
+    }
+
+    /**
+     * Clip that initiated the current dispatch.
+     *
+     * @type {Clip|null}
+     * @readonly
+     */
+    get target() {
+        return _eventStates.get(this).target
+    }
+
+    /**
+     * Clip whose listeners are currently being called.
+     *
+     * @type {Clip|null}
+     * @readonly
+     */
+    get currentTarget() {
+        return _eventStates.get(this).currentTarget
+    }
+
+}
+
+
+/* ================================================================================================================== */
 /**
  * Clip Error.
- * @param {string} message Descripción del error.
- * @param {{ code?: string, cause?: any }=} [options] Opciones adicionales.
  */
-function ClipError(message, { code = null, cause } = {}) {
-    this.name = 'ClipError';
-    this.message = String(message);
-    this.code = code;
+class ClipError extends Error {
 
-    if (cause !== undefined) {
-        this.cause = cause;
+    // Códigos de error:
+    static alreadyDefined   = 'already_defined'
+    static rootRequired     = 'root_required'
+    static loadFailed       = 'load_failed'
+    static notDefined       = 'not_defined'
+    static notFound         = 'not_found'
+
+    /**
+     * Constructor.
+     * @param {string} message Descripción del error.
+     * @param {{ code?: string, cause?: Error | Error[] }} [options] Opciones adicionales.
+     */
+    constructor(message, { code = null, cause } = {}) {
+        super(String(message), cause !== undefined ? { cause } : undefined)
+
+        this.name = 'ClipError'
+        this.code = code
+
+        if (Error.captureStackTrace) {
+            Error.captureStackTrace(this, ClipError)
+        }
     }
-
-    Error.captureStackTrace ? Error.captureStackTrace(this, ClipError) : this.stack = (new Error(message)).stack;
 }
-ClipError.prototype = Object.create(Error.prototype);
-ClipError.prototype.constructor = ClipError;
-
-// Códigos de error.
-ClipError.ROOT_REQUIRED = 'root_required';
-ClipError.LOAD_FAILED   = 'load_failed';
-ClipError.NOT_DEFINED   = 'not_defined';
-ClipError.NOT_FOUND     = 'not_found';
 
 
-/* Template functions 
+/* RENDER CONTEXT
  * ================================================================================================================== */
 /**
- * Carga la plantilla especificada.
- * @param {string} name Nombre o ruta de la plantilla especificada.
- * @return {Function} Función de la plantilla cargada.
+ * Builds HTML output and resolves nested clip and template inclusions.
+ *
+ * Each context belongs to a clip and represents a single rendering operation. Inclusion markers must appear exactly 
+ * once in the generated HTML.
  */
-const _loadTemplate = async function(name) {
-    const path = `${_settings.basePath}/${name}.ejs`;
-    const res = await fetch(path, { cache: "no-store" }); // evita cache en dev
-    if (!res.ok) {
-        throw new Error(`Unable to load template: ${path} (${res.status})`);
+class RenderContext {
+
+    /**
+     * HTML output chunks.
+     *
+     * @type {string[]}
+     */
+    #out = []
+
+    /**
+     * Clip associated with this rendering operation.
+     *
+     * @type {Clip}
+     */
+    #clip = null
+
+    /**
+     * Pending inclusions, in registration order.
+     *
+     * @type {Array<{name: string, options: Object}>}
+     */
+    #includes = []
+
+    /**
+     * Whether resolution has started.
+     *
+     * @type {boolean}
+     */
+    #resolveStarted = false
+
+    /**
+     * Creates a rendering context associated with a clip.
+     *
+     * @param {Clip} clip Associated clip.
+     */
+    constructor(clip) {
+        this.#clip = clip
     }
-    return _templates[name] = ejs.compile(await res.text());
+
+    /**
+     * Registers an inclusion and returns its HTML comment marker.
+     *
+     * Names beginning with the clip prefix identify clips. Other names identify templates.
+     *
+     * The returned marker must be incorporated into the HTML output. Inclusion options are shallow-copied when registered.
+     *
+     * @param {string} name Clip or template name.
+     * @param {Object} [options={}] Inclusion options.
+     * @returns {string} HTML comment marker.
+     */
+    include(name, options) {
+        this.#assertResolveNotStarted()
+
+        const index = this.#includes.length
+        this.#includes.push({ name, options })
+
+        return `<!--[clip-slot:${index}]-->`
+    }
+
+    /**
+     * Appends a value to the HTML output.
+     *
+     * The value is converted to a string before optionally being escaped.
+     *
+     * @param {*} value Value to append.
+     * @param {boolean} [esc=false] Whether to escape HTML special characters.
+     * @returns {void}
+     */
+    print(value, esc = false) {
+        this.#assertResolveNotStarted()
+
+        value = String(value)
+        this.#out.push(esc ? this.escape(value) : value)
+    }
+    
+    /**
+     * Parses the accumulated HTML and resolves all registered inclusions.
+     *
+     * Inclusion markers are located before resolving any inclusion.
+     * Inclusions are then resolved sequentially in registration order.
+     *
+     * The resulting nodes belong to a detached DocumentFragment.
+     *
+     * @returns {Promise<DocumentFragment>} Rendered HTML fragment.
+     * @throws {Error} If an inclusion marker is invalid, duplicated or missing.
+     */
+    async resolve() {
+        if (this.#resolveStarted) {
+            throw new ClipError('Render context resolution has already started.')
+        }
+
+        this.#resolveStarted = true
+
+        const template = document.createElement('template')
+        template.innerHTML = this.#out.join('')
+
+        const slots = new Map()
+
+        const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_COMMENT)
+
+        while (walker.nextNode()) {
+            const node = walker.currentNode
+            const match = /^\[clip-slot:(0|[1-9]\d*)\]$/.exec(node.data)
+
+            if (!match) {
+                continue
+            }
+
+            const index = Number(match[1])
+
+            if (index >= this.#includes.length || slots.has(index)) {
+                throw new ClipError(`Invalid include slot: ${node.data}`)
+            }
+
+            slots.set(index, node)
+        }
+
+        if (slots.size !== this.#includes.length) {
+            throw new ClipError(`Includes mismatch: ${slots.size} vs ${this.#includes.length}`)
+        }
+
+        for (let i = 0; i < this.#includes.length; i++) {
+            const { name, options } = this.#includes[i]
+
+            if (name.startsWith(_clipPrefix)) {
+                const clip = await clips.create(name.substring(_clipPrefix.length), options)
+
+                await clip.include(slots.get(i), { ...options, position: Clip.Position.replace })
+            } else {
+                const fragment = await clips.render(this.#clip, name, options)
+
+                slots.get(i).replaceWith(fragment)
+            }
+        }
+
+        return template.content
+    }
+
+    #assertResolveNotStarted() {
+        if (this.#resolveStarted) {
+            throw new ClipError('Cannot modify a render context after resolution has started.')
+        }
+    }
+
+    /**
+     * Concatenates the results of a synchronous callback over an iterable.
+     *
+     * The callback receives each item and its zero-based iteration index,
+     * with the associated clip as its this value.
+     * Null and undefined results are omitted. Results are not HTML-escaped.
+     * Null or undefined items are treated as an empty iterable.
+     *
+     * @param {Iterable<*>|null|undefined} items Items to iterate over.
+     * @param {function(*, number): *} callback Synchronous rendering callback.
+     * @returns {string} Concatenated callback results.
+     */
+    each(items, callback) {
+        const out = []
+        
+        let index = 0
+        for (const item of items ?? []) {
+            const value = callback.call(this.#clip, item, index++)
+
+            if (value != null) {
+                out.push(value)
+            }
+        }
+
+        return out.join('')
+    }
+
+    /**
+     * Converts a value to a string and escapes HTML special characters.
+     *
+     * @param {*} value Value to escape.
+     * @returns {string} Escaped string.
+     */
+    escape(value) {
+        return escape.html(value)
+    }
+
 }
 
+
+/* CLIPS OBJECT
+ * ================================================================================================================== */
+
 /**
- * Fuerza el reflow del elemento especificado.
- * @param {Element} el Elemento especificado.
+ * Formato del nombre de los clips (path-like), uno o varios segmentos separados 
+ * por "/", cada segmento: [A-Za-z0-9_-]+
+ * 
  * @private
- */
-function _reflow(el) {
-    return el.getBoundingClientRect();
-}
+ * @type {RegExp}
+ * @constant
+ */ 
+const _clipNameRegexp = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
 
-
-/* Main Object 
- * ================================================================================================================== */
 /**
- * Settings.
+ * Longitud máxima permitida para los nombres de clip.
+ * 
+ * @private
+ * @type {number}
+ * @constant
+ */
+const _clipNameMaxLength = 256;
+
+/**
+ * Ajustes de configuración.
  * @type {Object}
  * @private
  * @constant
@@ -698,14 +998,14 @@ function _reflow(el) {
 const _settings = {
 
     /**
-     * Indica si activar el modo debug.
+     * Indica si activar el modo de depuración.
      * @type {boolean}
      * @default false
      */
     debug: false,
 
     /**
-     * Ruta base donde se localiza la definición de los clips.
+     * Ruta base donde se ubica la definición de los clips.
      * @type {string}
      * @default '/clips'
      */
@@ -724,146 +1024,20 @@ const _settings = {
      * @default false
      */
     templatesBundled: false
-};
+}
 
 /**
- * Manejadores de Clips definidos.
- * @type {Object.<string, Clip>}
- * @constant
- */
-const _handlers = Object.create(null);
-
-/**
- * Funciones de plantilla añadidas.
- * @type {Object.<string, (...) => HTMLElement}
- * @constant
- */
-const _templates = Object.create(null);
-
-/**
- * Mapa de asociación entre elementos e instancias de clips.
- * @type {WeakMap.<Element, Clip>}
- * @constant
+ * Clips registrados por nombre.
+ * 
  * @private
+ * @type {Map<string, typeof Clip>}
  */
-const _elementClips = new WeakMap();
-
-/**
- * Referencia al elemento de estilos donde se importan los estilos de los diferentes clips definidos.
- * @type {HTMLStyleElement}
- * @private
- */
-let _styleElement;
-
-/**
- * Devuelve el primer clip vinculado a uno de los ascendientes del elemento especificado.
- * @param {Element} el Elemento especificado.
- * @returns {Clip|null} Clip encontrado o null si no se encuentra.
- * @private
- */
-const _closestClip = function(el) {
-    for (let n = el?.parentElement, c; n; n = n.parentElement) {
-        if (c = _elementClips.get(n)) return c;
-    }
-    return null;
-};
-
-/**
- * Importa los estilos del clip especificado.
- * @param {string} name Nombre del clip.
- * @param {string|function|HTMLStyleElement|CSSStyleSheet} styles Estilos del clip.
- */
-const _importClipStyles = async function(name, styles) {
-    // Los estilos se pueden definir como propiedad o como función.
-    if (typeof styles === 'function') {
-        styles = styles();
-    }
-    // Si se definen como HTMLStyleElement, se añaden directamente al head.
-    if (styles instanceof HTMLStyleElement) {
-        document.head.appendChild(styles);
-        return;
-    }
-    // Si se definen como CSSStyleSheet, se añaden a las hojas de estilo adoptadas.
-    if (styles instanceof CSSStyleSheet) {
-        document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
-        return;
-    }
-    // Si el clip no define estilos en código y no están empaquetados, se intenta cargar la hoja de estilos por defecto 
-    // ubicada en la misma ubicación que el clip.
-    if (!styles && !_settings.stylesBundled) {
-        // TODO: Más que un flag que nos indique si los estilos están empaquetados o no, lo que realmente necesitamos es 
-        // una definición de bundles con la especificación de nombres o patrones de clips incluidos en cada bundle, de 
-        // forma que podamos introducir aquí la lógica de carga adecuada.
-        const path = `${_settings.basePath}/${name}/${Clip.defaultStylesName}.css`;
-        let res;
-        try {
-            res = await fetch(path);
-        } catch (err) {
-            throw new ClipError(`Failed to fetch styles for clip "${name}" from "${path}": ${err.message}`, {
-                code: ClipError.LOAD_FAILED,
-                cause: err
-            });
-        }
-        if (res.ok) {
-            styles = await res.text();
-        } else if (res.status !== 404 && res.status !== 410) {
-            throw new ClipError(`Failed to load styles for clip "${name}" from "${path}": ${res.statusText} (${res.status})`, {
-                code: ClipError.LOAD_FAILED
-            });
-        } else if (_settings.debug) {
-            console.warn(`No styles found for clip "${name}" at "${path}".`);
-        }
-    }
-    if (styles && (styles = styles.trim())) {
-        if (!_styleElement) {
-            _styleElement = document.createElement('style');
-            _styleElement.id = 'clips-styles';
-            _styleElement.setAttribute('data-source', 'clips');
-            document.head.appendChild(_styleElement);
-        }
-        _styleElement.textContent += `\n/* ${name} */\n${styles}\n`;
-    }
-};
-
-/**
- * Carga el manejador del clip especificado por nombre.
- * @param {string} name Nombre del clip especificado.
- * @return {Clip} Manejador del clip especificado.
- */
-const _loadHandler = async function(name) {
-    // TODO: Introducir aquí posibles mapeos para bundles.
-    /*
-        _settings.bundles?.forEach(bundle => {
-            if (bundle.pattern.test(name)) {
-                loadBundle(bundle.path);
-            }
-        });
-    */
-    // Se carga el prototipo del manejador.
-    const path = `${_settings.basePath}/${name}/${Clip.defaultHandlerName}.js`;
-    let module;
-    try {
-        module = await import(path);
-    } catch (err) {
-        throw new ClipError(`Clip "${name}" could not be loaded from ${path}.`, {
-            code: ClipError.LOAD_FAILED,
-            cause: err
-        });
-    }
-
-    // Se define el clip con el prototipo cargado.
-    const proto = module && module.default;
-    if (proto === null || typeof proto !== 'object') {
-        throw new ClipError(`Clip "${name}" has no default export.`, {
-            code: ClipError.NOT_DEFINED
-        });
-    }
-    return await clips.define(name, proto);
-};
+const _clipTypes = new Map()
 
 
 /**
- * Main Object.
+ * TODO: Falta documentación.
+ * 
  * @namespace
  */
 const clips = {
@@ -876,117 +1050,118 @@ const clips = {
      * @param {boolean} [settings.stylesBundled] Indica si los estilos están pre-empaquetados.
      * @param {boolean} [settings.templatesBundled] Indica si las plantillas están pre-empaquetadas.
      */
-    setup: function(settings) {
+    setup(settings) {
         Object.assign(_settings, settings);
     },
     
     /**
-     * Define un nuevo tipo de clip.
-     * @param {string} name Nombre del clip (único).
-     * @param {Object} proto Prototipo del clip.
-     * @return {new (options: ClipOptions) => Clip} Constructor del nuevo tipo de clip.
+     * Defines a new clip type.
+     *
+     * @param {string} name Unique clip name.
+     * @param {Object} proto Clip prototype.
+     * @returns {Promise<typeof Clip>} Resolves to the new clip constructor.
      */
-    define: async function(name, proto) {
-        // Nombre del clip.
+    async define(name, proto) {
+        // Se valida el nombre.
         if (typeof name !== 'string') {
-            throw new TypeError('Invalid clip name: string required.');
+            throw new TypeError('Invalid clip name: string required.')
         }
-        name = name.trim();
+
+        name = name.trim()
+
         if (!name) {
-            throw new TypeError('Invalid clip name: empty string.');
-        }
-        if (name.length > CLIP_NAME_MAX_LENGTH) {
-            throw new RangeError(`Invalid clip name: too long (${name.length} > ${CLIP_NAME_MAX_LENGTH}).`);
-        }
-        if (!CLIP_NAME_RE.test(name)) {
-            throw new TypeError('Invalid clip name: expected path-like string without leading or trailing slash.');
-        }
-        if (_handlers[name]) {
-            throw new Error(`Clip "${name}" already defined.`);
+            throw new TypeError('Invalid clip name: empty string.')
         }
 
-        // Objeto prototipo.
-        if (proto === null || typeof proto !== 'object' || Object.getPrototypeOf(proto) !== Object.prototype) {
-            throw new TypeError('Invalid prototype: plain object required.');
+        if (name.length > _clipNameMaxLength) {
+            throw new RangeError(`Invalid clip name: too long (${name.length} > ${_clipNameMaxLength}).`)
         }
 
-        // Se comprueba la validez de la propiedad "extends" si se ha especificado.
-        let base = proto.extends;
-        if (base !== undefined) {
-            if (typeof base !== 'string') {
-                throw new TypeError(`Invalid extends: string required.`);
+        if (!_clipNameRegexp.test(name)) {
+            throw new TypeError('Invalid clip name: expected path-like string without leading or trailing slash.')
+        }
+
+        // Se permite una promesa pendiente, pero no un tipo ya definido.
+        const previous = _clipTypes.get(name)
+
+        if (previous?.prototype instanceof Clip) {
+            throw new ClipError(`Clip "${name}" already defined.`, {
+                code: ClipError.alreadyDefined
+            })
+        }
+
+        // Se valida el objeto prototipo.
+        if (proto === null || typeof proto !== 'object') {
+            throw new TypeError('Invalid prototype: object required.')
+        }
+
+        // Se resuelve el tipo base del clip.
+        let BaseClip = Clip
+
+        if (proto.extends != null) {
+            let ext = proto.extends
+
+            if (typeof ext !== 'string') {
+                throw new TypeError(`Invalid extends: string required.`)
             }
-            base = base.trim();
-            if (!base) {
-                throw new TypeError(`Invalid extends: empty string.`);
+
+            ext = ext.trim()
+
+            if (!ext) {
+                throw new TypeError(`Invalid extends: empty string.`)
             }
-            if (!_handlers[base]) {
-                await _loadHandler(base);
-                if (!_handlers[base]) {
-                    throw new ReferenceError(`Invalid extends: clip "${base}" not defined.`);
-                }
+
+            if (ext === name) {
+                throw new TypeError('Invalid extends: a clip cannot extend itself.')
+            }
+
+            BaseClip = await _getClipType(ext)
+
+            if (!BaseClip) {
+                throw new ClipError(`Invalid extends: clip "${ext}" not defined.`, { code: ClipError.notDefined })
             }
         }
 
-        // Se determina el constructor base si se ha especificado.
-        const B = base ? _handlers[base] : Clip;
+        // Se admite un objeto plano o uno previamente vinculado a esta clase base.
+        const parent = Object.getPrototypeOf(proto)
 
-        // Se crea la función constructora del nuevo clip.
-        const C = function(options) {
-            B.call(this, options);
-        };
+        if (parent !== Object.prototype && parent !== BaseClip.prototype) {
+            throw new TypeError('Invalid prototype: plain object or object linked to the base clip prototype required.')
+        }
 
-        // Se heredan los estáticos del constructor base.
-        Object.setPrototypeOf(C, B);
+        // Se crea la clase del nuevo clip.
+        const C = class extends BaseClip {}
 
-        // Se extraen los descriptores del prototipo, excluyendo "extends" y "styles".
-        const desc = Object.getOwnPropertyDescriptors(proto);
-        delete desc.extends;
-        delete desc.styles;
+        // Se establece el prototipo base para permitir el uso de super.
+        Object.setPrototypeOf(proto, BaseClip.prototype)
 
-        // Se crea el prototipo del nuevo clip a partir del prototipo base.
-        C.prototype = Object.create(B.prototype);
-        Object.defineProperties(C.prototype, desc);
+        // Se obtienen los descriptores, excluyendo "constructor", "extends" y "styles".
+        const desc = Object.getOwnPropertyDescriptors(proto)
+        delete desc.constructor
+        delete desc.extends
+        delete desc.styles
 
-        // Se define la propiedad "constructor" no enumerable.
-        Object.defineProperty(C.prototype, 'constructor', {
-            value: C,
-            writable: true,
-            configurable: true,
-            enumerable: false
-        });
+        // Se incorporan los miembros al prototipo de la clase.
+        Object.defineProperties(C.prototype, desc)
 
-        // Se añade la propiedad "clipName" al constructor y el método de acceso para facilitar el acceso desde las instancias.
-        const CLIP_NAME = Symbol('clips.name');
-        Object.defineProperty(C, CLIP_NAME, {
-            value: name
-        });
-        Object.defineProperty(C.prototype, 'clipName', {
-            get() {
-                return this.constructor[CLIP_NAME];
-            },
-            configurable: true,
-            enumerable: false
-        });
+        // Se asigna a la clase el nombre del tipo de clip.
+        Object.defineProperty(C, 'name', {
+            value: name,
+            configurable: true
+        })
 
-        // Se define la propiedad "displayName" para depuración.
-        C.displayName = name;
+        // Se importan la estilos vinculados al clip.
+        await _importClipStyles(name, proto.styles);
 
-        // Se añade la referencia al prototipo base.
-        const BASE = Symbol('clips.base');
-        Object.defineProperty(C, BASE, {
-            value: B
-        });
-        Object.defineProperty(C.prototype, 'basePrototype', {
-            get() { return this.constructor[BASE].prototype; },
-            enumerable: false
-        });
+        // Se comprueba que la entrada no haya cambiado durante la definición.
+        if (_clipTypes.get(name) !== previous) {
+            throw new ClipError(`Clip "${name}" already defined.`, {
+                code: ClipError.alreadyDefined
+            })
+        }
 
-        // Se guarda el constructor por nombre.
-        _handlers[name] = C;
-
-        // Se importan la hoja de estilos asociada.
-        _importClipStyles(name, proto.styles);
+        // Se registra y devuelve el constructor del nuevo clip.
+        _clipTypes.set(name, C);
         
         // Se devuelve el constructor del nuevo clip.
         return C;
@@ -998,103 +1173,16 @@ const clips = {
      * @param {ClipOptions} [options] Opciones de creación del clip.
      * @return {Clip} Instancia del clip creada.
      */
-    create: async function(name, options = {}) {
+    async create(name, options = {}) {
         if (typeof name !== "string" || !(name = name.trim())) {
-            throw new TypeError('Invalid clip name: non-empty string required.');
+            throw new TypeError('Invalid clip name: non-empty string required.')
         }
-        if (!_handlers[name]) {
-            await _loadHandler(name);
+        let clip = await _getClipType(name)
+        if (!clip) {
+            throw new ClipError(`Clip "${name}" is not defined.`, { code: ClipError.notDefined })
         }
-        const handler = _handlers[name];
-        if (!handler) {
-            throw new ClipError(`Clip "${name}" is not defined.`, {
-                code: ClipError.NOT_DEFINED
-            });
-        }
-        return new handler(options);
+        return new clip(options)
     },
-
-    /**
-     * Renderiza la plantilla especificada por nombre en el contexto del clip especificado.
-     * @param {Clip} clip Referencia al clip actual.
-     * @param {string} name Nombre o ruta de la plantilla a renderizar.
-     * @param {Object} [options] Opciones adicionales de renderizado.
-     * @return {DocumentFragment} Fragmento generado. 
-     */
-    render: async function(clip, name, options) {
-        // Se comprueba si la función de plantilla está definida.
-        let templateFn = _templates[name];
-        if (!templateFn && !_settings.templatesBundled) {
-            // Si no existe la plantilla, y no se han pre-empaquetado las plantillas, se intenta cargar.
-            templateFn = await _loadTemplate(name);
-        }
-        if (!templateFn) {
-            throw new Error(`Template "${name}" not found.`);
-        }
-
-        /** 
-         * Buffer de salida.
-         * @type {string[]}
-         */
-        const out = [];
-        
-        /** 
-         * Includes añadidos durante la ejecución de la plantilla.
-         * Cada entrada contiene el nombre y las opciones especificadas.
-         * @type {{name: string, options?: any}[]}
-         */
-        const includes = [];
-
-        /** 
-         * Contexto local pasado a la función de plantilla. Contiene el buffer de salida y las utilidades básicas 
-         * (escape, print, include...).
-         * @type {{
-         *  escape: (value: any) => string,
-         *  print: (...args: any[]) => void,
-         *  printRaw: (...args: any[]) => void,
-         *  include: (name: string, options?: Object) => void
-         * }}
-         */
-        const locals = {
-            options, // TODO: Evaluar si definir solo "data" o que hacer?
-            escape: esc.html,
-            print: (...args) => out.push(...args.map(v => esc.html(String(v)))),
-            printRaw: (...args) => out.push(...args.map(v => String(v))),
-            include: function(name, options = {}) {
-                includes.push({ name, options });
-                out.push('<clip-slot></clip-slot>');
-            }
-        };
-
-        // Se ejecuta la plantilla con el contexto anterior.
-        templateFn.call(clip, out, locals);
-
-        // Se crea un elemento "template" para parsear el código HTML generado.
-        const template = document.createElement('template');
-        template.innerHTML = out.join('');
-        
-        // Resolvemos las inclusiones añadidas.
-        const slots = template.content.querySelectorAll('clip-slot');
-        if (slots.length !== includes.length) {
-            throw new Error(`Includes mismatch: ${slots.length} vs ${includes.length}`);
-        }
-        for (let i = 0, c, fragment; i < includes.length; i++) {
-            if (includes[i].name.startsWith(CLIP_PREFIX)) {
-                c = await clips.create(includes[i].name.substring(CLIP_PREFIX.length), includes[i].options);
-                await c.include(slots[i], { ...includes[i].options, position: Clip.Position.REPLACE, parentClip: clip });
-                continue;
-            }
-            fragment = await clips.render(clip, includes[i].name, includes[i].options);
-            slots[i].replaceWith(fragment);
-        }
-
-        // Se devuelve el contenido generado.
-        return template.content;
-    },
-
-    getRenderContext: function(clip) {
-        return new RenderContext(clip)
-    }
 
     /**
      * Incluye un clip o una plantilla en el elemento o selector especificado.
@@ -1104,38 +1192,188 @@ const clips = {
      * @see Clip#create
      * @see Clip#include
      */
-    include: async function(name, target, options) {
+    async include(name, target, options) {
         return (await this.create(name, options)).include(target, options); 
-    },
-
-    /**
-     * Devuelve el clip asociado con el elemento especificado.
-     * @param {HTMLElement|string} el Elemento o selector.
-     * @param {string} [selector] Selector adicional dentro del elemento especificado.
-     * @returns {Clip|null} Clip o nulo si no se encuentra.
-     */
-    find: function(el, selector) {
-        if (typeof el === 'string') {
-            el = document.querySelector(el);
-        } else if (el instanceof Element && selector) {
-            el = el.querySelector(selector);
-        }
-        return (el instanceof Element && _elementClips.get(el)) || null;
-    },
-
-    /**
-     * Fija la ruta base de donde cargar los clips.
-     * @param {string} path Ruta especificada.
-     */
-    basePath: function(path) {
-        if (typeof path === 'string') {
-            path = path.trim().replace(/\/$/, '');
-        }
-        _settings.basePath = path;
     }
 
-};
+}
+
+/**
+ * Comprueba si el tipo del clip especificado está cargado. Si no está registrado lo intenta cargar.
+ * 
+ * @private
+ * @param {string} name Nombre del clip.
+ * @returns {Promise<typeof Clip>} Tipo del clip cargado.
+ */
+async function _getClipType(name) {
+    const type = _clipTypes.get(name)
+
+    if (type) {
+        return type
+    }
+
+    const promise = _importClip(name)
+
+    _clipTypes.set(name, promise)
+
+    try {
+        return await promise
+
+    } catch (err) {
+        if (_clipTypes.get(name) === promise) {
+            _clipTypes.delete(name)
+        }
+
+        throw err
+    }
+}
+
+/**
+ * Carga el manejador de un clip especificado por nombre.
+ * 
+ * @private
+ * @param {string} name Nombre del clip.
+ * @returns {Promise<typeof Clip>} Tipo del clip cargado.
+ */
+async function _importClip(name) {
+    // TODO: Introducir aquí posibles mapeos para bundles.
+    /*
+        _settings.bundles?.forEach(bundle => {
+            if (bundle.pattern.test(name)) {
+                loadBundle(bundle.path);
+            }
+        });
+    */
+
+    const errors = []
+
+    for (const path of [
+            `${_settings.basePath}/${name}.js`,
+            `${_settings.basePath}/${name}/index.js`]) {
+                
+        let proto
+
+        try {
+            ({ default: proto } = await import(path))
+        } catch (cause) {
+            errors.push(new ClipError(`Failed to import clip "${name}" from "${path}".`, {
+                code: ClipError.loadFailed,
+                cause
+            }))
+            continue
+        }
+
+        // Si la definición cargada no es válida, no se intenta la siguiente ruta.
+        if (proto === null || typeof proto !== 'object') {
+            throw new ClipError(`Invalid clip "${name}" in "${path}": default export must be an object.`, {
+                code: ClipError.loadFailed
+            })
+        }
+
+        // Se registra y devuelve el tipo cargado.
+        return clips.define(name, proto)
+    }
+
+    throw new ClipError(`All import attempts for clip "${name}" failed.`, {
+        code: ClipError.loadFailed,
+        cause: errors
+    })
+}
 
 
-// Export
-export default clips;
+/**
+ * Imports styles for the specified clip.
+ *
+ * @private
+ * @param {string} name Clip name.
+ * @param {string|Function|HTMLStyleElement|CSSStyleSheet} [styles]
+ * Styles or a synchronous or asynchronous function that returns them.
+ * If omitted or undefined, attempts to load the default stylesheet unless styles are bundled.
+ * @returns {Promise<void>} Resolves when style loading and insertion are complete.
+ */
+async function _importClipStyles(name, styles) {
+    // Los estilos se pueden definir como propiedad o como función.
+    if (typeof styles === 'function') {
+        styles = await styles()
+    }
+    // Si se definen como HTMLStyleElement, se añaden directamente al head.
+    if (styles instanceof HTMLStyleElement) {
+        document.head.appendChild(styles)
+        return
+    }
+    // Si se definen como CSSStyleSheet, se añaden a las hojas de estilo adoptadas.
+    if (styles instanceof CSSStyleSheet) {
+        if (!document.adoptedStyleSheets.includes(styles)) {
+            document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles]
+        }
+        return
+    }
+
+    // Si el clip no define estilos en código y no están empaquetados, se intenta cargar la hoja de estilos por defecto 
+    // ubicada en la misma ubicación que el clip.
+    if (styles == null && !_settings.stylesBundled) {
+        // TODO: Más que un flag que nos indique si los estilos están empaquetados o no, lo que realmente necesitamos es 
+        // una definición de bundles con la especificación de nombres o patrones de clips incluidos en cada bundle, de 
+        // forma que podamos introducir aquí la lógica de carga adecuada.
+        const path = `${_settings.basePath}/${name}/${Clip.defaultStylesName}.css`
+
+        let res
+
+        try {
+            res = await fetch(path)
+
+            if (res.ok) {
+                styles = await res.text()
+            }
+        } catch (err) {
+            throw new ClipError(`Failed to fetch styles for clip "${name}" from "${path}": ${err.message}`, {
+                code: ClipError.loadFailed,
+                cause: err
+            })
+        }
+
+        if (!res.ok) {
+            if (res.status !== 404 && res.status !== 410) {
+                throw new ClipError(`Failed to load styles for clip "${name}" from "${path}": ${res.statusText} (${res.status})`, {
+                    code: ClipError.loadFailed
+                })
+            }
+
+            if (_settings.debug) {
+                console.warn(`No styles found for clip "${name}" at "${path}".`)
+            }
+        }
+            
+    }
+
+    if (styles == null) {
+        return
+    }
+
+    if (typeof styles !== 'string') {
+        throw new TypeError(`Invalid styles for clip "${name}": string, HTMLStyleElement or CSSStyleSheet required.`)
+    }
+
+    styles = styles.trim()
+
+    if (!styles) {
+        return
+    }
+
+    if (!_styleElement) {
+        _styleElement = document.createElement('style');
+        _styleElement.id = 'clips-styles';
+        _styleElement.setAttribute('data-source', 'clips');
+        document.head.appendChild(_styleElement);
+    }
+
+    _styleElement.textContent += `\n/* ${name} */\n${styles}\n`;
+}
+
+// Global scope
+if (window) {
+    window.clips = clips
+}
+
+// Exports
+export default clips
